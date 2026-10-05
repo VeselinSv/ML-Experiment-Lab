@@ -1472,7 +1472,7 @@ py -m venv .venv
 PowerShell:
 
 ```powershell
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 ```
 
 След activation често ще видиш:
@@ -1520,7 +1520,7 @@ pytest
 git clone https://github.com/VeselinSv/ML-Experiment-Lab.git
 cd ML-Experiment-Lab
 py -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
@@ -1576,7 +1576,7 @@ git clone https://github.com/VeselinSv/ML-Experiment-Lab.git
 ```powershell
 cd ML-Experiment-Lab
 py -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
@@ -1752,9 +1752,7 @@ Register
 
 Първо завършваме основния workflow.
 
-## 35.2. Не копираме код без разбиране
-
-Проектът се изгражда едновременно с учене.
+## 35.2. Проектът се изгражда едновременно с учене.
 
 ## 35.3. Малки commits
 
@@ -1788,7 +1786,7 @@ ML engine не трябва да зависи директно от конкре
 
 # 36. План за разработка
 
-Проектът е планиран за приблизително 4 месеца с около 5–10 часа седмично.
+Проектът е планиран за приблизително 4 месеца.
 
 ## Фаза 1 — Foundation
 

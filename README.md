@@ -16,7 +16,7 @@ Milestone 0: project foundation + first PySide6 window.
 
 ```powershell
 py -3.13 -m venv .venv
-.venv\\Scripts\\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e .
 python -m ml_experiment_lab

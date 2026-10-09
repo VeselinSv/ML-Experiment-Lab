@@ -9,6 +9,12 @@ from ml_experiment_lab.ui.widgets.dataset_overview_widget import (
 from ml_experiment_lab.ui.widgets.quick_actions_widget import (
     QuickActionsWidget,
 )
+from ml_experiment_lab.ui.widgets.recent_experiments_widget import (
+    RecentExperimentsWidget,
+)
+from ml_experiment_lab.ui.widgets.system_status_widget import (
+    SystemStatusWidget,
+)
 
 
 class DashboardPage(QWidget):
@@ -36,15 +42,23 @@ class DashboardPage(QWidget):
         self.quick_actions.new_experiment_requested.connect(
             self.handle_new_experiment
         )
+
         self.quick_actions.upload_dataset_requested.connect(
             self.handle_upload_dataset
         )
+
         self.quick_actions.open_model_requested.connect(
             self.handle_open_model
         )
 
         # Dataset overview widget.
         self.dataset_overview = DatasetOverviewWidget()
+
+        # Recent experiments widget.
+        self.recent_experiments = RecentExperimentsWidget()
+
+        # System status widget.
+        self.system_status = SystemStatusWidget()
 
         # Main dashboard layout.
         layout = QVBoxLayout(self)
@@ -53,6 +67,8 @@ class DashboardPage(QWidget):
         layout.addWidget(subtitle)
         layout.addWidget(self.quick_actions)
         layout.addWidget(self.dataset_overview)
+        layout.addWidget(self.recent_experiments)
+        layout.addWidget(self.system_status)
         layout.addWidget(self.action_status)
 
     def handle_new_experiment(self) -> None:

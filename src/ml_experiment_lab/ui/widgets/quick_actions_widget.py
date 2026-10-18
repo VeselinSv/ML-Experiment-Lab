@@ -1,4 +1,5 @@
-"""Quick actions widget for the dashboard."""
+
+"""Компонент за бързи действия в началното табло."""
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
 
 
 class QuickActionsWidget(QWidget):
-    """Widget containing common actions available from the dashboard."""
+    """Компонент с най-често използваните действия."""
 
     new_experiment_requested = Signal()
     upload_dataset_requested = Signal()
@@ -19,11 +20,13 @@ class QuickActionsWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
 
-        title = QLabel("Quick Actions")
+        title = QLabel("Бързи действия")
 
-        new_experiment_button = QPushButton("New Experiment")
-        upload_dataset_button = QPushButton("Upload Dataset")
-        open_model_button = QPushButton("Open Model")
+        new_experiment_button = QPushButton("Нов експеримент")
+        upload_dataset_button = QPushButton(
+            "Импортиране на набор от данни"
+        )
+        open_model_button = QPushButton("Отваряне на модел")
 
         new_experiment_button.clicked.connect(
             self.new_experiment_requested.emit

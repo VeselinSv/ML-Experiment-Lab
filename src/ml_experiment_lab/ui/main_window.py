@@ -1,4 +1,5 @@
-"""Main application window."""
+
+"""Главен прозорец на приложението."""
 
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -22,14 +23,17 @@ from ml_experiment_lab.ui.widgets.sidebar import Sidebar
 
 
 class MainWindow(QMainWindow):
-    """Top-level window of ML Experiment Lab."""
+    """Главен прозорец на ML Experiment Lab."""
 
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(
+            f"{APP_NAME} — Платформа за машинно обучение"
+        )
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
+        # Създаваме страниците на приложението.
         self.dashboard_page = DashboardPage()
         self.datasets_page = DatasetsPage()
         self.experiments_page = ExperimentsPage()
@@ -37,6 +41,7 @@ class MainWindow(QMainWindow):
         self.benchmarks_page = BenchmarksPage()
         self.settings_page = SettingsPage()
 
+        # Контейнер за превключване между страниците.
         self.page_stack = QStackedWidget()
 
         self.page_stack.addWidget(self.dashboard_page)
@@ -46,6 +51,7 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self.benchmarks_page)
         self.page_stack.addWidget(self.settings_page)
 
+        # Лява навигационна лента.
         sidebar = Sidebar(
             on_dashboard=self.show_dashboard,
             on_datasets=self.show_datasets,
@@ -55,6 +61,7 @@ class MainWindow(QMainWindow):
             on_settings=self.show_settings,
         )
 
+        # Основно разположение на прозореца.
         central_widget = QWidget()
         main_layout = QHBoxLayout(central_widget)
 
@@ -64,25 +71,25 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
     def show_dashboard(self) -> None:
-        """Show the dashboard page."""
+        """Показва началното табло."""
         self.page_stack.setCurrentWidget(self.dashboard_page)
 
     def show_datasets(self) -> None:
-        """Show the datasets page."""
+        """Показва страницата с наборите от данни."""
         self.page_stack.setCurrentWidget(self.datasets_page)
 
     def show_experiments(self) -> None:
-        """Show the experiments page."""
+        """Показва страницата с експериментите."""
         self.page_stack.setCurrentWidget(self.experiments_page)
 
     def show_models(self) -> None:
-        """Show the models page."""
+        """Показва страницата с моделите."""
         self.page_stack.setCurrentWidget(self.models_page)
 
     def show_benchmarks(self) -> None:
-        """Show the benchmarks page."""
+        """Показва страницата за сравняване на резултатите."""
         self.page_stack.setCurrentWidget(self.benchmarks_page)
 
     def show_settings(self) -> None:
-        """Show the settings page."""
+        """Показва страницата с настройките."""
         self.page_stack.setCurrentWidget(self.settings_page)

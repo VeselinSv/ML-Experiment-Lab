@@ -7,7 +7,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Qt трябва да работи и в среда без видим работен плот.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +32,8 @@ class DatasetImportWidgetTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.widget.close()
         self.widget.deleteLater()
-        self.temp_dir.cleanup()
         self.app.processEvents()
+        self.temp_dir.cleanup()
 
     def test_load_file_displays_dataset(self) -> None:
         csv_path = self.temp_path / "students.csv"
@@ -67,7 +66,7 @@ class DatasetImportWidgetTests(unittest.TestCase):
         )
         self.assertEqual(len(received_datasets), 1)
         self.assertIn(
-            "successfully",
+            "зареден успешно",
             self.widget._status_label.text(),
         )
 
@@ -79,7 +78,11 @@ class DatasetImportWidgetTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIsNone(self.widget.dataset)
         self.assertIn(
-            "Could not load CSV",
+            "Неуспешно зареждане:",
+            self.widget._status_label.text(),
+        )
+        self.assertIn(
+            "Файлът не съществува",
             self.widget._status_label.text(),
         )
 
@@ -88,6 +91,7 @@ class DatasetImportWidgetTests(unittest.TestCase):
 
         records = ["value"]
         records.extend(str(number) for number in range(105))
+
         csv_path.write_text(
             "\n".join(records) + "\n",
             encoding="utf-8",
@@ -99,8 +103,8 @@ class DatasetImportWidgetTests(unittest.TestCase):
         self.assertEqual(self.widget.dataset.row_count, 105)
         self.assertEqual(self.widget._table.rowCount(), 100)
         self.assertIn(
-            "first 100 rows",
-            self.widget._summary_label.text(),
+            "първите 100 реда",
+            self.widget._status_label.text(),
         )
 
     def test_failed_load_preserves_previous_dataset(self) -> None:
@@ -120,7 +124,7 @@ class DatasetImportWidgetTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIs(self.widget.dataset, original_dataset)
         self.assertIn(
-            "previous dataset remains displayed",
+            "Предишният набор от данни остава показан",
             self.widget._status_label.text(),
         )
 

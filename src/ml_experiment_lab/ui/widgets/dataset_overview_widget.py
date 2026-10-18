@@ -1,4 +1,5 @@
-"""Dataset overview widget for the dashboard."""
+
+"""Компонент с обобщена информация за наборите от данни."""
 
 from PySide6.QtWidgets import (
     QLabel,
@@ -9,27 +10,31 @@ from PySide6.QtWidgets import (
 
 
 class DatasetOverviewWidget(QWidget):
-    """Display summary information about available datasets."""
+    """Показва обобщена информация за наличните набори от данни."""
 
     def __init__(self) -> None:
         super().__init__()
 
-        title = QLabel("Dataset Overview")
+        title = QLabel("Обобщение на наборите от данни")
 
         self.dataset_count_value = QLabel("0")
-        self.last_dataset_value = QLabel("No dataset uploaded")
-        self.storage_used_value = QLabel("0 MB")
+        self.last_dataset_value = QLabel(
+            "Няма добавен набор от данни"
+        )
+        self.storage_used_value = QLabel("0 МБ")
 
         count_row = QHBoxLayout()
-        count_row.addWidget(QLabel("Number of datasets:"))
+        count_row.addWidget(QLabel("Брой набори от данни:"))
         count_row.addWidget(self.dataset_count_value)
 
         last_dataset_row = QHBoxLayout()
-        last_dataset_row.addWidget(QLabel("Last uploaded dataset:"))
+        last_dataset_row.addWidget(
+            QLabel("Последно добавен набор:")
+        )
         last_dataset_row.addWidget(self.last_dataset_value)
 
         storage_row = QHBoxLayout()
-        storage_row.addWidget(QLabel("Storage used:"))
+        storage_row.addWidget(QLabel("Използвано пространство:"))
         storage_row.addWidget(self.storage_used_value)
 
         layout = QVBoxLayout(self)
@@ -45,15 +50,17 @@ class DatasetOverviewWidget(QWidget):
         last_dataset_name: str | None,
         storage_used_mb: float,
     ) -> None:
-        """Update the displayed dataset summary."""
+        """Обновява обобщената информация за наборите от данни."""
 
         self.dataset_count_value.setText(str(dataset_count))
 
         if last_dataset_name:
             self.last_dataset_value.setText(last_dataset_name)
         else:
-            self.last_dataset_value.setText("No dataset uploaded")
+            self.last_dataset_value.setText(
+                "Няма добавен набор от данни"
+            )
 
         self.storage_used_value.setText(
-            f"{storage_used_mb:.2f} MB"
+            f"{storage_used_mb:.2f} МБ"
         )

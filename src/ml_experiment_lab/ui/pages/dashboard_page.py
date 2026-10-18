@@ -1,4 +1,5 @@
-"""Dashboard page."""
+
+"""Начално табло на приложението."""
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
@@ -18,25 +19,29 @@ from ml_experiment_lab.ui.widgets.system_status_widget import (
 
 
 class DashboardPage(QWidget):
-    """Main dashboard page."""
+    """Начално табло с обобщена информация за проекта."""
 
     def __init__(self) -> None:
         super().__init__()
 
-        # Dashboard title.
+        # Заглавие и описание.
         title = QLabel("ML Experiment Lab")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        subtitle = QLabel("Project foundation is working...")
+        subtitle = QLabel(
+            "Среда за работа с данни и експерименти по машинно обучение."
+        )
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
 
-        # Status message for Quick Actions.
-        self.action_status = QLabel("No action selected.")
+        # Съобщение за състоянието на последното действие.
+        self.action_status = QLabel("Няма избрано действие.")
         self.action_status.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
+        self.action_status.setWordWrap(True)
 
-        # Quick Actions widget.
+        # Компонент за бързи действия.
         self.quick_actions = QuickActionsWidget()
 
         self.quick_actions.new_experiment_requested.connect(
@@ -51,16 +56,16 @@ class DashboardPage(QWidget):
             self.handle_open_model
         )
 
-        # Dataset overview widget.
+        # Обобщение на заредените набори от данни.
         self.dataset_overview = DatasetOverviewWidget()
 
-        # Recent experiments widget.
+        # Последни експерименти.
         self.recent_experiments = RecentExperimentsWidget()
 
-        # System status widget.
+        # Състояние на системата.
         self.system_status = SystemStatusWidget()
 
-        # Main dashboard layout.
+        # Основно разположение на началното табло.
         layout = QVBoxLayout(self)
 
         layout.addWidget(title)
@@ -72,19 +77,19 @@ class DashboardPage(QWidget):
         layout.addWidget(self.action_status)
 
     def handle_new_experiment(self) -> None:
-        """Handle a request to create a new experiment."""
+        """Обработва заявка за създаване на нов експеримент."""
         self.action_status.setText(
-            "New Experiment was requested."
+            "Заявено е създаване на нов експеримент."
         )
 
     def handle_upload_dataset(self) -> None:
-        """Handle a request to upload a dataset."""
+        """Обработва заявка за зареждане на набор от данни."""
         self.action_status.setText(
-            "Upload Dataset was requested."
+            "Заявено е зареждане на набор от данни."
         )
 
     def handle_open_model(self) -> None:
-        """Handle a request to open a model."""
+        """Обработва заявка за отваряне на модел."""
         self.action_status.setText(
-            "Open Model was requested."
+            "Заявено е отваряне на модел."
         )

@@ -1,4 +1,6 @@
 
+"""Страница за управление и анализ на набори от данни."""
+
 from __future__ import annotations
 
 import csv
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -38,13 +41,14 @@ from ml_experiment_lab.datasets import (
     DatasetLoadError,
     DatasetProfile,
     LoadedDataset,
-    load_csv,
+    get_excel_sheet_names,
+    load_dataset,
     profile_dataset,
 )
 
 
 class DatasetTableModel(QAbstractTableModel):
-    """Read-only table model for a LoadedDataset."""
+    """Модел само за четене на таблица с данни."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -99,13 +103,12 @@ class DatasetTableModel(QAbstractTableModel):
 
 
 class ColumnFilterProxyModel(QSortFilterProxyModel):
-    """Filter rows only by the column selected by the user."""
+    """Филтрира редовете само по избраната от потребителя колона."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._search_text = ""
         self._search_column: int | None = None
-
         self.setDynamicSortFilter(True)
         self.setFilterCaseSensitivity(
             Qt.CaseSensitivity.CaseInsensitive
@@ -118,16 +121,13 @@ class ColumnFilterProxyModel(QSortFilterProxyModel):
     def set_search_column(self, column: int | None) -> None:
         if column == self._search_column:
             return
-
         self._search_column = column
         self.invalidateFilter()
 
     def set_search_text(self, text: str) -> None:
         normalized_text = text.strip()
-
         if normalized_text == self._search_text:
             return
-
         self._search_text = normalized_text
         self.invalidateFilter()
 
@@ -140,7 +140,6 @@ class ColumnFilterProxyModel(QSortFilterProxyModel):
             return True
 
         source_model = self.sourceModel()
-
         if source_model is None:
             return True
 
@@ -152,10 +151,7 @@ class ColumnFilterProxyModel(QSortFilterProxyModel):
             self._search_column,
             source_parent,
         )
-        value = source_model.data(
-            index,
-            Qt.ItemDataRole.DisplayRole,
-        )
+        value = source_model.data(index, Qt.ItemDataRole.DisplayRole)
 
         if value is None:
             return False
@@ -164,51 +160,59 @@ class ColumnFilterProxyModel(QSortFilterProxyModel):
 
 
 class DatasetsPage(QWidget):
-    """Workspace for importing, exploring, and assessing CSV datasets."""
+    """Работно пространство за управление на набори от данни."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-
         self._datasets: dict[str, LoadedDataset] = {}
         self._current_path: str | None = None
         self._selected_search_column: int | None = None
-
         self._build_ui()
 
     @property
     def dataset_count(self) -> int:
-        """Number of unique datasets loaded in the current session."""
+        """Брой уникални заредени набори в текущата сесия."""
         return len(self._datasets)
 
     @property
     def current_dataset(self) -> LoadedDataset | None:
+        """Връща текущо избрания набор от данни."""
         if self._current_path is None:
             return None
         return self._datasets.get(self._current_path)
 
+    @staticmethod
+    def _dataset_key(dataset: LoadedDataset) -> str:
+        """Осигурява отделен ключ за всеки Excel работен лист."""
+        key = str(dataset.path)
+
+        if dataset.sheet_name is not None:
+            key += f"::лист::{dataset.sheet_name}"
+
+        return key
+
     def _build_ui(self) -> None:
         page_layout = QVBoxLayout(self)
 
-        # -----------------------------------------------------
-        # Page heading and primary actions
-        # -----------------------------------------------------
+        # Заглавие и основни действия.
         heading_layout = QHBoxLayout()
         title_layout = QVBoxLayout()
 
-        title = QLabel("Datasets")
+        title = QLabel("Набори от данни")
         title.setObjectName("pageTitle")
 
         subtitle = QLabel(
-            "Import CSV files, explore their contents, and assess data quality."
+            "Импортирайте CSV и Excel файлове, разглеждайте "
+            "съдържанието им и проверявайте качеството на данните."
         )
         subtitle.setWordWrap(True)
 
         title_layout.addWidget(title)
         title_layout.addWidget(subtitle)
 
-        self._import_button = QPushButton("Import CSV")
-        self._export_button = QPushButton("Export CSV")
-        self._remove_button = QPushButton("Remove Dataset")
+        self._import_button = QPushButton("Импортиране на данни")
+        self._export_button = QPushButton("Експортиране в CSV")
+        self._remove_button = QPushButton("Премахване на набор")
 
         self._export_button.setEnabled(False)
         self._remove_button.setEnabled(False)
@@ -217,13 +221,10 @@ class DatasetsPage(QWidget):
         heading_layout.addWidget(self._import_button)
         heading_layout.addWidget(self._export_button)
         heading_layout.addWidget(self._remove_button)
-
         page_layout.addLayout(heading_layout)
 
-        # -----------------------------------------------------
-        # Dataset overview
-        # -----------------------------------------------------
-        overview_group = QGroupBox("Dataset Overview")
+        # Обобщена информация.
+        overview_group = QGroupBox("Обща информация")
         overview_layout = QGridLayout(overview_group)
 
         self._dataset_count_value = QLabel("0")
@@ -233,11 +234,11 @@ class DatasetsPage(QWidget):
         self._duplicates_value = QLabel("—")
 
         overview_items = [
-            ("Loaded Datasets", self._dataset_count_value),
-            ("Rows", self._rows_value),
-            ("Columns", self._columns_value),
-            ("Missing Cells", self._missing_value),
-            ("Duplicate Rows", self._duplicates_value),
+            ("Заредени набори", self._dataset_count_value),
+            ("Редове", self._rows_value),
+            ("Колони", self._columns_value),
+            ("Липсващи клетки", self._missing_value),
+            ("Дублирани редове", self._duplicates_value),
         ]
 
         for column, (caption, value_label) in enumerate(overview_items):
@@ -246,9 +247,7 @@ class DatasetsPage(QWidget):
 
         page_layout.addWidget(overview_group)
 
-        # -----------------------------------------------------
-        # Left panel: dataset list and full file path
-        # -----------------------------------------------------
+        # Ляв панел: списък и пълен път до файла.
         self._dataset_list = QListWidget()
         self._dataset_list.setMinimumWidth(210)
         self._dataset_list.setSelectionMode(
@@ -262,13 +261,10 @@ class DatasetsPage(QWidget):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        left_layout.addWidget(QLabel("Loaded Datasets"))
+        left_layout.addWidget(QLabel("Заредени набори от данни"))
         left_layout.addWidget(self._dataset_list, 1)
+        left_layout.addWidget(QLabel("Пълен път до избрания файл"))
 
-        left_layout.addWidget(QLabel("Selected File Path"))
-
-        # A read-only, single-line text view. If the file path is long,
-        # the user can scroll horizontally to see the full path and name.
         self._selected_file_path = QPlainTextEdit()
         self._selected_file_path.setObjectName("selectedFilePath")
         self._selected_file_path.setReadOnly(True)
@@ -283,48 +279,42 @@ class DatasetsPage(QWidget):
         )
         self._selected_file_path.setFixedHeight(58)
         self._selected_file_path.setPlaceholderText(
-            "Select a dataset to view its full file path."
+            "Изберете набор, за да видите пълния път до файла."
         )
         self._selected_file_path.setToolTip(
-            "The full path of the selected CSV file. "
-            "Use the horizontal scrollbar to inspect long paths."
+            "Пълният път до файла. Използвайте хоризонталния скролер "
+            "за преглед на дълги пътища."
         )
-
         left_layout.addWidget(self._selected_file_path)
 
-        # -----------------------------------------------------
-        # Right panel: data preview and quality tabs
-        # -----------------------------------------------------
+        # Десен панел: преглед на данните и качество.
         self._tabs = QTabWidget()
 
-        # Data preview tab.
         preview_tab = QWidget()
         preview_layout = QVBoxLayout(preview_tab)
 
         search_heading = QHBoxLayout()
-        search_heading.addWidget(QLabel("Search in Column"))
-
-        self._search_column_label = QLabel("No column selected")
+        search_heading.addWidget(QLabel("Търсене в колона"))
+        self._search_column_label = QLabel("Няма избрана колона")
         search_heading.addWidget(self._search_column_label, 1)
         preview_layout.addLayout(search_heading)
 
         search_layout = QHBoxLayout()
-
         self._search_input = QLineEdit()
         self._search_input.setPlaceholderText(
-            "Select a column in the table first..."
+            "Първо изберете колона от таблицата..."
         )
         self._search_input.setClearButtonEnabled(True)
         self._search_input.setEnabled(False)
         self._search_input.setToolTip(
-            "Click a column header or a cell in the column you want to search."
+            "Изберете заглавие или клетка от колоната, "
+            "в която искате да търсите."
         )
-
         search_layout.addWidget(self._search_input, 1)
         preview_layout.addLayout(search_layout)
 
         self._search_result_label = QLabel(
-            "Select a dataset, then select a column to enable search."
+            "Изберете набор от данни, а след това колона за търсене."
         )
         self._search_result_label.setWordWrap(True)
         preview_layout.addWidget(self._search_result_label)
@@ -356,39 +346,38 @@ class DatasetsPage(QWidget):
         table_header.sectionClicked.connect(
             self._on_table_header_clicked
         )
-
         self._table_view.selectionModel().currentChanged.connect(
             self._on_table_current_changed
         )
 
         preview_layout.addWidget(self._table_view, 1)
-        self._tabs.addTab(preview_tab, "Data Preview")
+        self._tabs.addTab(preview_tab, "Преглед на данните")
 
-        # Data quality tab.
+        # Раздел за качеството на данните.
         quality_tab = QWidget()
         quality_layout = QVBoxLayout(quality_tab)
 
         self._quality_summary_label = QLabel(
-            "Load a dataset to run data quality checks."
+            "Заредете набор от данни, за да проверите качеството му."
         )
         self._quality_summary_label.setWordWrap(True)
         quality_layout.addWidget(self._quality_summary_label)
 
-        profile_group = QGroupBox("Column Statistics")
+        profile_group = QGroupBox("Статистики по колони")
         profile_group_layout = QVBoxLayout(profile_group)
 
         self._profile_table = QTableWidget()
         self._profile_table.setColumnCount(8)
         self._profile_table.setHorizontalHeaderLabels(
             [
-                "Column",
-                "Detected Type",
-                "Missing",
-                "Missing (%)",
-                "Unique",
-                "Minimum",
-                "Maximum",
-                "Mean",
+                "Колона",
+                "Разпознат тип",
+                "Липсващи",
+                "Липсващи (%)",
+                "Уникални",
+                "Минимум",
+                "Максимум",
+                "Средна стойност",
             ]
         )
         self._profile_table.setEditTriggers(
@@ -409,17 +398,17 @@ class DatasetsPage(QWidget):
         profile_group_layout.addWidget(self._profile_table)
         quality_layout.addWidget(profile_group, 2)
 
-        issues_group = QGroupBox("Findings & Recommendations")
+        issues_group = QGroupBox("Открити проблеми и препоръки")
         issues_group_layout = QVBoxLayout(issues_group)
 
         self._issues_table = QTableWidget()
         self._issues_table.setColumnCount(4)
         self._issues_table.setHorizontalHeaderLabels(
             [
-                "Severity",
-                "Finding & Details",
-                "Column",
-                "Recommended Action",
+                "Сериозност",
+                "Проблем и подробности",
+                "Колона",
+                "Препоръчително действие",
             ]
         )
         self._issues_table.setEditTriggers(
@@ -451,26 +440,21 @@ class DatasetsPage(QWidget):
         issues_group_layout.addWidget(self._issues_table)
         quality_layout.addWidget(issues_group, 3)
 
-        self._tabs.addTab(quality_tab, "Data Quality")
+        self._tabs.addTab(quality_tab, "Качество на данните")
 
-        # -----------------------------------------------------
-        # Overall layout and status
-        # -----------------------------------------------------
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left_panel)
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
-
         page_layout.addWidget(splitter, 1)
 
-        self._status_label = QLabel("Import a CSV file to get started.")
+        self._status_label = QLabel(
+            "Импортирайте CSV или Excel файл, за да започнете."
+        )
         self._status_label.setWordWrap(True)
         page_layout.addWidget(self._status_label)
 
-        # -----------------------------------------------------
-        # Signal connections
-        # -----------------------------------------------------
         self._import_button.clicked.connect(self._choose_files)
         self._export_button.clicked.connect(self._choose_export_location)
         self._remove_button.clicked.connect(self.remove_current_dataset)
@@ -482,7 +466,7 @@ class DatasetsPage(QWidget):
         )
 
     # ---------------------------------------------------------
-    # Scrollable text helpers
+    # Скролируем текст
     # ---------------------------------------------------------
 
     @staticmethod
@@ -491,7 +475,7 @@ class DatasetsPage(QWidget):
         *,
         height: int = 78,
     ) -> QPlainTextEdit:
-        """Create a read-only text area with scrolling for long content."""
+        """Създава поле само за четене със скролер."""
         editor = QPlainTextEdit()
         editor.setReadOnly(True)
         editor.setPlainText(text)
@@ -510,36 +494,63 @@ class DatasetsPage(QWidget):
         return editor
 
     # ---------------------------------------------------------
-    # Import and dataset registry
+    # Зареждане на CSV и Excel
     # ---------------------------------------------------------
 
     @staticmethod
     def _format_load_error(error: DatasetLoadError) -> str:
-        """Format CSV loader errors as readable English messages."""
+        """Преобразува грешките при зареждане в български съобщения."""
         message = str(error)
 
         if message.startswith("File does not exist:"):
             path = message.split(":", 1)[1].strip()
-            return f"File does not exist: {path}"
+            return f"Файлът не съществува: {path}"
 
         if message.startswith("The selected path is not a file:"):
             path = message.split(":", 1)[1].strip()
-            return f"The selected path is not a file: {path}"
+            return f"Избраният път не сочи към файл: {path}"
 
         if "must have a .csv extension" in message:
-            return "Please select a file with the .csv extension."
+            return "Изберете файл с разширение .csv."
+
+        if "must have an .xlsx extension" in message:
+            return "Изберете файл с разширение .xlsx."
+
+        if "Supported file types" in message:
+            return "Поддържат се файлове с разширение .csv и .xlsx."
 
         if message == "The CSV file is empty.":
-            return "The CSV file is empty."
+            return "CSV файлът е празен."
+
+        if "selected worksheet is empty" in message:
+            return "Избраният работен лист е празен."
+
+        if "does not contain worksheets" in message:
+            return "Excel файлът не съдържа работни листове."
+
+        if "Worksheet not found:" in message:
+            return "Избраният работен лист не е намерен."
+
+        if "Could not open the Excel workbook:" in message:
+            return (
+                "Excel файлът не може да бъде отворен. "
+                "Проверете дали файлът е валиден и не е повреден."
+            )
+
+        if "Excel import requires openpyxl" in message:
+            return (
+                "За импортиране на Excel е необходима библиотеката "
+                "openpyxl. Инсталирайте зависимостите на проекта."
+            )
 
         if "first row must contain column names" in message:
-            return "The first row must contain column names."
+            return "Първият ред трябва да съдържа имената на колоните."
 
         if "Every column must have a name" in message:
-            return "Every column must have a name."
+            return "Всяка колона трябва да има име."
 
         if "Column names must be unique" in message:
-            return "Column names must be unique."
+            return "Имената на колоните трябва да са уникални."
 
         if message.startswith("Invalid record "):
             match = re.search(
@@ -549,36 +560,55 @@ class DatasetsPage(QWidget):
             if match:
                 record, expected, found = match.groups()
                 return (
-                    f"Invalid record {record}: expected {expected} values, "
-                    f"but found {found}. Check the CSV file structure."
+                    f"Невалиден ред {record}: очакват се {expected} "
+                    f"стойности, но са открити {found}. "
+                    "Проверете структурата на файла."
                 )
-            return (
-                "Some rows have a different number of values than the header."
-            )
+
+            match = re.search(r"Invalid record (\d+)", message)
+            if match:
+                return (
+                    f"Невалиден ред {match.group(1)}: открити са данни "
+                    "извън именуваните колони."
+                )
+
+            return "Някои редове имат невалидна структура."
 
         if "could not be read as UTF-8" in message:
             return (
-                "The file could not be read as UTF-8. "
-                "Save it as UTF-8 and try again."
+                "Файлът не може да бъде прочетен като UTF-8. "
+                "Запазете го в UTF-8 и опитайте отново."
             )
 
         if message.startswith("The CSV format is invalid:"):
             return (
-                "The CSV structure is invalid. "
-                "Check the delimiters and quotation marks."
+                "Структурата на CSV файла е невалидна. "
+                "Проверете разделителите и кавичките."
             )
 
         if message.startswith("Could not open the CSV file:"):
-            return "Could not open the CSV file. Check file permissions."
+            return (
+                "CSV файлът не може да бъде отворен. "
+                "Проверете правата за достъп."
+            )
 
-        return "Could not load the CSV file. Check the file and try again."
+        return (
+            "Файлът не може да бъде зареден. "
+            "Проверете формата и съдържанието му."
+        )
 
     def _choose_files(self) -> None:
+        """Отваря диалог за избор на CSV и Excel файлове."""
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select CSV Files",
+            "Избор на набори от данни",
             "",
-            "CSV Files (*.csv);;All Files (*)",
+            (
+                "Поддържани файлове (*.csv *.xlsx);;"
+                "CSV файлове (*.csv);;"
+                "Excel файлове (*.xlsx);;"
+                "Всички файлове (*)"
+            ),
         )
 
         if not file_paths:
@@ -586,21 +616,71 @@ class DatasetsPage(QWidget):
 
         initial_count = self.dataset_count
         failed_files: list[str] = []
+        cancelled_count = 0
 
         for file_path in file_paths:
+            path = Path(file_path)
+            sheet_name: str | None = None
+
+            if path.suffix.casefold() == ".xlsx":
+                try:
+                    sheet_names = get_excel_sheet_names(path)
+                except DatasetLoadError as exc:
+                    failed_files.append(
+                        f"{path.name} ({self._format_load_error(exc)})"
+                    )
+                    continue
+
+                if not sheet_names:
+                    failed_files.append(
+                        f"{path.name} (няма работни листове)"
+                    )
+                    continue
+
+                if len(sheet_names) == 1:
+                    sheet_name = sheet_names[0]
+                else:
+                    sheet_name, accepted = QInputDialog.getItem(
+                        self,
+                        "Избор на работен лист",
+                        (
+                            f"Excel файлът „{path.name}“ съдържа "
+                            "няколко работни листа.\n"
+                            "Изберете кой лист да бъде зареден:"
+                        ),
+                        list(sheet_names),
+                        0,
+                        False,
+                    )
+
+                    if not accepted:
+                        cancelled_count += 1
+                        continue
+
             if not self.add_dataset(
-                file_path,
+                path,
+                sheet_name=sheet_name,
                 update_status=False,
             ):
-                failed_files.append(Path(file_path).name)
+                failed_files.append(path.name)
 
         added_count = self.dataset_count - initial_count
         message = (
-            f"Import finished. Added {added_count} new dataset(s)."
+            f"Импортирането приключи. Добавени са "
+            f"{added_count} нови набора от данни."
         )
 
+        if cancelled_count:
+            message += (
+                f" Пропуснати по избор на потребителя: {cancelled_count}."
+            )
+
         if failed_files:
-            message += " Failed to load: " + ", ".join(failed_files) + "."
+            message += (
+                " Неуспешно зареждане: "
+                + "; ".join(failed_files)
+                + "."
+            )
 
         self._set_status(message)
 
@@ -608,60 +688,81 @@ class DatasetsPage(QWidget):
         self,
         file_path: str | Path,
         *,
+        sheet_name: str | None = None,
         update_status: bool = True,
     ) -> bool:
-        """Load a CSV file and add it to the current session."""
+        """Зарежда CSV файл или избран лист от Excel файл."""
         try:
-            dataset = load_csv(file_path)
+            dataset = load_dataset(
+                file_path,
+                sheet_name=sheet_name,
+            )
         except DatasetLoadError as exc:
             if update_status:
                 self._set_status(
-                    f"Could not load CSV: {self._format_load_error(exc)}"
+                    f"Неуспешно зареждане: "
+                    f"{self._format_load_error(exc)}"
                 )
             return False
 
-        dataset_key = str(dataset.path)
+        dataset_key = self._dataset_key(dataset)
 
         if dataset_key in self._datasets:
             self._select_dataset_by_key(dataset_key)
 
             if update_status:
                 self._set_status(
-                    f"{dataset.path.name} is already loaded."
+                    "Този файл или работен лист вече е зареден."
                 )
             return True
 
         self._datasets[dataset_key] = dataset
 
-        # Keep the list compact; full name and path remain available
-        # in the tooltip and the scrollable Selected File Path field.
+        sheet_suffix = (
+            f" — лист: {dataset.sheet_name}"
+            if dataset.sheet_name is not None
+            else ""
+        )
+
         item = QListWidgetItem(
-            f"{dataset.path.name}  ({dataset.row_count} rows)"
+            f"{dataset.path.name}{sheet_suffix} "
+            f"({dataset.row_count} реда)"
         )
         item.setData(Qt.ItemDataRole.UserRole, dataset_key)
-        item.setToolTip(
-            f"File: {dataset.path.name}\nFull path: {dataset.path}\n"
-            f"Rows: {dataset.row_count}\nColumns: {dataset.column_count}"
+
+        tooltip = (
+            f"Файл: {dataset.path.name}\n"
+            f"Пълен път: {dataset.path}\n"
         )
+
+        if dataset.sheet_name is not None:
+            tooltip += f"Работен лист: {dataset.sheet_name}\n"
+
+        tooltip += (
+            f"Редове: {dataset.row_count}\n"
+            f"Колони: {dataset.column_count}"
+        )
+        item.setToolTip(tooltip)
 
         self._dataset_list.addItem(item)
         self._dataset_list.setCurrentItem(item)
 
         if update_status:
-            self._set_status(f"Loaded {dataset.path.name} successfully.")
+            self._set_status(
+                f"Файлът {dataset.path.name} е зареден успешно."
+            )
 
         return True
 
     def _select_dataset_by_key(self, dataset_key: str) -> None:
         for row in range(self._dataset_list.count()):
             item = self._dataset_list.item(row)
-
             if item.data(Qt.ItemDataRole.UserRole) == dataset_key:
                 self._dataset_list.setCurrentItem(item)
                 return
 
     # ---------------------------------------------------------
-    # Dataset and column selection
+    # Избор на набор и колона
     # ---------------------------------------------------------
 
     def _on_dataset_selected(
@@ -685,9 +786,12 @@ class DatasetsPage(QWidget):
         self._current_path = dataset_key
         self._reset_search_column()
 
-        # Display the complete path, even when it is longer than the panel.
         self._selected_file_path.setPlainText(str(dataset.path))
-        self._selected_file_path.setToolTip(str(dataset.path))
+
+        tooltip = str(dataset.path)
+        if dataset.sheet_name is not None:
+            tooltip += f"\nРаботен лист: {dataset.sheet_name}"
+        self._selected_file_path.setToolTip(tooltip)
 
         self._table_view.clearSelection()
         self._table_model.set_dataset(dataset)
@@ -705,7 +809,6 @@ class DatasetsPage(QWidget):
     def _on_table_header_clicked(self, column: int) -> None:
         if self.current_dataset is None:
             return
-
         if not 0 <= column < self.current_dataset.column_count:
             return
 
@@ -718,13 +821,11 @@ class DatasetsPage(QWidget):
         previous: QModelIndex,
     ) -> None:
         del previous
-
         if current.isValid():
             self._activate_search_column(current.column())
 
     def _activate_search_column(self, column: int) -> None:
         dataset = self.current_dataset
-
         if dataset is None or not 0 <= column < dataset.column_count:
             return
 
@@ -734,14 +835,14 @@ class DatasetsPage(QWidget):
 
         self._proxy_model.set_search_column(column)
         self._search_column_label.setText(
-            f"Selected column: {column_name}"
+            f"Избрана колона: {column_name}"
         )
         self._search_input.setEnabled(True)
         self._search_input.setPlaceholderText(
-            f"Search in {column_name}..."
+            f"Търсене в „{column_name}“..."
         )
         self._search_input.setToolTip(
-            f"Search is limited to the {column_name} column."
+            f"Търсенето е ограничено до колоната „{column_name}“."
         )
 
         if column_changed:
@@ -756,17 +857,17 @@ class DatasetsPage(QWidget):
         self._search_input.clear()
         self._search_input.setEnabled(False)
         self._search_input.setPlaceholderText(
-            "Select a column in the table first..."
+            "Първо изберете колона от таблицата..."
         )
         self._search_input.setToolTip(
-            "Click a column header or a cell in the column you want to search."
+            "Изберете заглавие или клетка от колоната, "
+            "в която искате да търсите."
         )
-
-        self._search_column_label.setText("No column selected")
+        self._search_column_label.setText("Няма избрана колона")
         self._update_search_result_label()
 
     # ---------------------------------------------------------
-    # Search
+    # Търсене
     # ---------------------------------------------------------
 
     def _on_search_text_changed(self, text: str) -> None:
@@ -778,7 +879,7 @@ class DatasetsPage(QWidget):
 
         if dataset is None:
             self._search_result_label.setText(
-                "Select a dataset, then select a column to enable search."
+                "Изберете набор от данни и колона за търсене."
             )
             return
 
@@ -786,7 +887,8 @@ class DatasetsPage(QWidget):
 
         if column is None:
             self._search_result_label.setText(
-                f"{dataset.row_count} rows available. Select a column to search."
+                f"Налични редове: {dataset.row_count}. "
+                "Изберете колона, за да търсите."
             )
             return
 
@@ -796,17 +898,17 @@ class DatasetsPage(QWidget):
 
         if not query:
             self._search_result_label.setText(
-                f"Showing all {dataset.row_count} rows. "
-                f"Search column: {column_name}."
+                f"Показани са всички {dataset.row_count} реда. "
+                f"Колона за търсене: {column_name}."
             )
         else:
             self._search_result_label.setText(
-                f"{visible_count} of {dataset.row_count} rows match "
-                f"'{query}' in column '{column_name}'."
+                f"{visible_count} от {dataset.row_count} реда съвпадат "
+                f"с „{query}“ в колоната „{column_name}“."
             )
 
     # ---------------------------------------------------------
-    # Dataset overview and column statistics
+    # Обобщение и статистики
     # ---------------------------------------------------------
 
     def _update_overview(
@@ -840,20 +942,20 @@ class DatasetsPage(QWidget):
         self._profile_table.setRowCount(len(profile.columns))
 
         type_labels = {
-            "integer": "Integer",
-            "decimal": "Decimal",
-            "boolean": "Boolean",
-            "date": "Date",
-            "category": "Category",
-            "text": "Text",
-            "mixed": "Mixed",
-            "empty": "Empty",
+            "integer": "Цяло число",
+            "decimal": "Десетично число",
+            "boolean": "Булева стойност",
+            "date": "Дата",
+            "category": "Категория",
+            "text": "Текст",
+            "mixed": "Смесени типове",
+            "empty": "Празна колона",
         }
 
         for row_index, column in enumerate(profile.columns):
             values = [
                 column.name,
-                type_labels.get(column.inferred_type, "Unknown"),
+                type_labels.get(column.inferred_type, "Неизвестен тип"),
                 str(column.missing_count),
                 f"{column.missing_percentage:.1f}%",
                 str(column.unique_count),
@@ -874,37 +976,141 @@ class DatasetsPage(QWidget):
                     item,
                 )
 
+    def _translated_issue(
+        self,
+        issue,
+        profile: DatasetProfile,
+    ) -> tuple[str, str, str]:
+        """Връща преведени заглавие, описание и препоръка."""
+        columns = {column.name: column for column in profile.columns}
+        column = columns.get(issue.column_name or "")
+
+        if issue.code == "empty_dataset":
+            return (
+                "Наборът не съдържа редове с данни",
+                "Файлът съдържа имената на колоните, но няма записи.",
+                "Проверете дали е избран правилният файл и дали съдържа данни.",
+            )
+
+        if issue.code == "empty_column":
+            name = issue.column_name or "?"
+            return (
+                "Колоната няма стойности",
+                f"Всичките {issue.affected_count} стойности в "
+                f"колоната „{name}“ липсват.",
+                "Проверете източника на данните. Ако колоната не е "
+                "необходима, обмислете премахването ѝ след преглед.",
+            )
+
+        if issue.code == "missing_values":
+            name = issue.column_name or "?"
+            missing_count = (
+                column.missing_count
+                if column
+                else issue.affected_count
+            )
+            percentage = (
+                column.missing_percentage if column else 0.0
+            )
+            title = (
+                "Голям брой липсващи стойности"
+                if percentage >= 20
+                else "Липсващи стойности"
+            )
+            return (
+                title,
+                f"Колоната „{name}“ съдържа {missing_count} "
+                f"липсващи стойности от {profile.row_count} "
+                f"({percentage:.1f}%).",
+                "Проверете защо стойностите липсват. Преди обучение "
+                "изберете подходящ начин за попълване или премахване "
+                "на непълни редове или колони.",
+            )
+
+        if issue.code == "constant_column":
+            name = issue.column_name or "?"
+            return (
+                "Колона с постоянна стойност",
+                f"Всички налични стойности в колоната „{name}“ са еднакви.",
+                "Постоянната характеристика обикновено не помага на модела "
+                "да различава наблюденията. Проверете дали е необходима.",
+            )
+
+        if issue.code == "mixed_values":
+            name = issue.column_name or "?"
+            numeric_count = column.mixed_numeric_count if column else 0
+            other_count = (
+                column.mixed_other_count
+                if column
+                else issue.affected_count
+            )
+            return (
+                "Възможно смесване на типове",
+                f"Колоната „{name}“ съдържа {numeric_count} числови "
+                f"и {other_count} нечислови стойности.",
+                "Проверете нечисловите стойности. Те може да са грешки, "
+                "специални маркери или валидни категории.",
+            )
+
+        if issue.code == "potential_outliers":
+            name = issue.column_name or "?"
+            return (
+                "Потенциални крайни стойности",
+                f"В числовата колона „{name}“ са открити "
+                f"{issue.affected_count} потенциални крайни стойности "
+                "според правилото 1,5 × IQR.",
+                "Проверете стойностите спрямо контекста. Не ги "
+                "премахвайте автоматично — може да са валидни наблюдения.",
+            )
+
+        if issue.code == "duplicate_rows":
+            return (
+                "Дублирани редове",
+                f"Открити са {issue.affected_count} повторени реда "
+                "след първото срещане на всеки ред.",
+                "Проверете повторенията и потвърдете дали са дубликати "
+                "или валидни отделни наблюдения, преди да ги премахнете.",
+            )
+
+        return (
+            issue.title,
+            issue.description,
+            issue.recommendation,
+        )
+
     def _update_quality_issues(self, profile: DatasetProfile) -> None:
         self._issues_table.setRowCount(len(profile.issues))
 
         severity_labels = {
-            "error": "Error",
-            "warning": "Warning",
-            "info": "Info",
+            "error": "Грешка",
+            "warning": "Предупреждение",
+            "info": "Информация",
         }
 
         for row_index, issue in enumerate(profile.issues):
-            severity_item = QTableWidgetItem(
-                severity_labels.get(issue.severity, "Info")
+            severity_text = severity_labels.get(
+                issue.severity,
+                "Информация",
             )
-            severity_item.setToolTip(severity_item.text())
+            severity_item = QTableWidgetItem(severity_text)
+            severity_item.setToolTip(severity_text)
             severity_item.setFlags(
                 severity_item.flags() & ~Qt.ItemFlag.ItemIsEditable
             )
             self._issues_table.setItem(row_index, 0, severity_item)
 
-            details_text = f"{issue.title}\n{issue.description}"
+            title, description, recommendation = self._translated_issue(
+                issue, profile
+            )
             details_widget = self._create_scrollable_text(
-                details_text,
+                f"{title}\n{description}",
                 height=78,
             )
             self._issues_table.setCellWidget(
-                row_index,
-                1,
-                details_widget,
+                row_index, 1, details_widget
             )
 
-            column_text = issue.column_name or "Dataset"
+            column_text = issue.column_name or "Целият набор"
             column_item = QTableWidgetItem(column_text)
             column_item.setToolTip(column_text)
             column_item.setFlags(
@@ -913,17 +1119,12 @@ class DatasetsPage(QWidget):
             self._issues_table.setItem(row_index, 2, column_item)
 
             recommendation_widget = self._create_scrollable_text(
-                issue.recommendation,
+                recommendation,
                 height=78,
             )
             self._issues_table.setCellWidget(
-                row_index,
-                3,
-                recommendation_widget,
+                row_index, 3, recommendation_widget
             )
-
-            # The scrollbars inside each text cell handle long content.
-            # The table's vertical scrollbar handles the list of findings.
             self._issues_table.setRowHeight(row_index, 82)
 
     def _update_quality_summary(self, profile: DatasetProfile) -> None:
@@ -941,25 +1142,26 @@ class DatasetsPage(QWidget):
         )
 
         summary = (
-            f"Total cells: {profile.total_cells}. "
-            f"Missing cells: {profile.missing_cells} "
+            f"Общо клетки: {profile.total_cells}. "
+            f"Липсващи клетки: {profile.missing_cells} "
             f"({profile.missing_percentage:.1f}%). "
-            f"Duplicate rows: {profile.duplicate_rows}.\n"
-            f"Check results: {error_count} errors, "
-            f"{warning_count} warnings and "
-            f"{info_count} informational findings."
+            f"Дублирани редове: {profile.duplicate_rows}.\n"
+            f"Резултати от проверката: {error_count} грешки, "
+            f"{warning_count} предупреждения и "
+            f"{info_count} информационни бележки."
         )
 
         if not profile.issues:
             summary += (
-                "\nNo issues were found by the current checks. "
-                "This does not guarantee that the data is suitable "
-                "for every machine-learning task."
+                "\nНе са открити проблеми при текущите проверки. "
+                "Това не гарантира, че данните са подходящи за всяка "
+                "задача по машинно обучение."
             )
         else:
             summary += (
-                "\nReview the recommendations before using this dataset "
-                "for training. Potential outliers are not necessarily errors."
+                "\nПрегледайте препоръките, преди да използвате набора "
+                "за обучение. Потенциалните крайни стойности не са "
+                "непременно грешки."
             )
 
         self._quality_summary_label.setText(summary)
@@ -976,22 +1178,23 @@ class DatasetsPage(QWidget):
         self._issues_table.setRowCount(0)
 
         self._quality_summary_label.setText(
-            "Load a dataset to run data quality checks."
+            "Заредете набор от данни, за да проверите качеството му."
         )
         self._export_button.setEnabled(False)
         self._remove_button.setEnabled(False)
-
         self._update_overview(None, None)
 
     # ---------------------------------------------------------
-    # Export
+    # Експортиране
     # ---------------------------------------------------------
 
     def _choose_export_location(self) -> None:
         dataset = self.current_dataset
 
         if dataset is None:
-            self._set_status("Select a dataset before exporting.")
+            self._set_status(
+                "Изберете набор от данни преди експортиране."
+            )
             return
 
         suggested_path = dataset.path.with_name(
@@ -1000,9 +1203,9 @@ class DatasetsPage(QWidget):
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Export Dataset",
+            "Експортиране на набор от данни",
             str(suggested_path),
-            "CSV Files (*.csv)",
+            "CSV файлове (*.csv)",
         )
 
         if file_path:
@@ -1012,11 +1215,13 @@ class DatasetsPage(QWidget):
         self,
         file_path: str | Path,
     ) -> bool:
-        """Export all source rows, including rows hidden by search."""
+        """Експортира всички редове, включително скритите от търсенето."""
         dataset = self.current_dataset
 
         if dataset is None:
-            self._set_status("Select a dataset before exporting.")
+            self._set_status(
+                "Изберете набор от данни преди експортиране."
+            )
             return False
 
         target_path = Path(file_path).expanduser()
@@ -1036,17 +1241,17 @@ class DatasetsPage(QWidget):
 
         except OSError as exc:
             self._set_status(
-                f"Could not export the CSV file: {exc}"
+                f"CSV файлът не може да бъде експортиран: {exc}"
             )
             return False
 
         self._set_status(
-            f"Dataset exported successfully to: {target_path.resolve()}"
+            f"Наборът е експортиран успешно в: {target_path.resolve()}"
         )
         return True
 
     # ---------------------------------------------------------
-    # Remove dataset
+    # Премахване на набор
     # ---------------------------------------------------------
 
     def remove_current_dataset(
@@ -1055,13 +1260,15 @@ class DatasetsPage(QWidget):
         *,
         confirm: bool = True,
     ) -> bool:
-        """Remove a dataset from this session without deleting its file."""
+        """Премахва набора от текущата сесия, без да изтрива файла."""
         del checked
 
         item = self._dataset_list.currentItem()
 
         if item is None:
-            self._set_status("Select a dataset to remove.")
+            self._set_status(
+                "Изберете набор от данни за премахване."
+            )
             return False
 
         dataset_key = item.data(Qt.ItemDataRole.UserRole)
@@ -1073,9 +1280,9 @@ class DatasetsPage(QWidget):
         if confirm:
             answer = QMessageBox.question(
                 self,
-                "Remove Dataset",
-                f"Remove {dataset.path.name} from the current session? "
-                "The original file will not be deleted.",
+                "Премахване на набор от данни",
+                f"Да се премахне ли {dataset.path.name} от текущата сесия? "
+                "Оригиналният файл няма да бъде изтрит.",
                 QMessageBox.StandardButton.Yes
                 | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -1108,8 +1315,8 @@ class DatasetsPage(QWidget):
         )
 
         self._set_status(
-            f"Removed {dataset.path.name} from the session. "
-            "The original file was not deleted."
+            f"{dataset.path.name} е премахнат от текущата сесия. "
+            "Оригиналният файл не е изтрит."
         )
         return True
 

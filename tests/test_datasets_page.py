@@ -60,7 +60,7 @@ class DatasetsPageTests(unittest.TestCase):
         self.assertEqual(self.page._profile_table.rowCount(), 3)
         self.assertGreater(self.page._issues_table.rowCount(), 0)
         self.assertIn(
-            "Missing cells",
+            "Липсващи клетки",
             self.page._quality_summary_label.text(),
         )
 
@@ -111,7 +111,7 @@ class DatasetsPageTests(unittest.TestCase):
 
         self.assertTrue(
             recommendation_found,
-            "Expected at least one scrollable recommendation.",
+            "Очаква се поне една препоръка със скролер.",
         )
 
     def test_finding_details_are_scrollable(self) -> None:
@@ -156,6 +156,7 @@ class DatasetsPageTests(unittest.TestCase):
 
         self.page._on_table_header_clicked(0)
         self.assertEqual(self.page._search_input.text(), "")
+
         self.page._search_input.setText("alice")
         self.assertEqual(self.page._proxy_model.rowCount(), 1)
 
@@ -169,12 +170,16 @@ class DatasetsPageTests(unittest.TestCase):
         self.assertTrue(self.page.add_dataset(path))
         self.assertEqual(self.page.dataset_count, 1)
 
-    def test_invalid_file_error_is_english(self) -> None:
+    def test_invalid_file_error_is_in_bulgarian(self) -> None:
         path = self.temp_path / "missing.csv"
 
         self.assertFalse(self.page.add_dataset(path))
         self.assertIn(
-            "Could not load CSV",
+            "Неуспешно зареждане:",
+            self.page._status_label.text(),
+        )
+        self.assertIn(
+            "Файлът не съществува",
             self.page._status_label.text(),
         )
 
@@ -190,11 +195,13 @@ class DatasetsPageTests(unittest.TestCase):
         self.assertEqual(self.page._proxy_model.rowCount(), 1)
 
         exported_path = self.temp_path / "exported.csv"
+
         self.assertTrue(
             self.page.export_current_dataset(exported_path)
         )
 
         exported = exported_path.read_text(encoding="utf-8-sig")
+
         self.assertIn("Alice,17", exported)
         self.assertIn("Bob,18", exported)
 
@@ -208,6 +215,7 @@ class DatasetsPageTests(unittest.TestCase):
         self.assertTrue(
             self.page.remove_current_dataset(confirm=False)
         )
+
         self.assertEqual(self.page.dataset_count, 0)
         self.assertTrue(path.exists())
 

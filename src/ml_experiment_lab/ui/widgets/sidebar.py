@@ -1,4 +1,5 @@
-"""Sidebar navigation widget."""
+
+"""Навигационна лента на приложението."""
 
 from collections.abc import Callable
 
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
 
 
 class Sidebar(QWidget):
-    """Application sidebar used for page navigation."""
+    """Странична лента за навигация между страниците."""
 
     def __init__(
         self,
@@ -27,26 +28,29 @@ class Sidebar(QWidget):
 
         layout = QVBoxLayout(self)
 
-        dashboard_button = QPushButton("Dashboard")
-        datasets_button = QPushButton("Datasets")
-        experiments_button = QPushButton("Experiments")
-        models_button = QPushButton("Models")
-        benchmarks_button = QPushButton("Benchmarks")
-        settings_button = QPushButton("Settings")
+        # Бутони за навигация.
+        self.dashboard_button = QPushButton("Табло")
+        self.datasets_button = QPushButton("Набори от данни")
+        self.experiments_button = QPushButton("Експерименти")
+        self.models_button = QPushButton("Модели")
+        self.benchmarks_button = QPushButton("Сравнения")
+        self.settings_button = QPushButton("Настройки")
 
-        dashboard_button.clicked.connect(on_dashboard)
-        datasets_button.clicked.connect(on_datasets)
-        experiments_button.clicked.connect(on_experiments)
-        models_button.clicked.connect(on_models)
-        benchmarks_button.clicked.connect(on_benchmarks)
-        settings_button.clicked.connect(on_settings)
+        # Свързваме бутоните със съответните страници.
+        self.dashboard_button.clicked.connect(on_dashboard)
+        self.datasets_button.clicked.connect(on_datasets)
+        self.experiments_button.clicked.connect(on_experiments)
+        self.models_button.clicked.connect(on_models)
+        self.benchmarks_button.clicked.connect(on_benchmarks)
+        self.settings_button.clicked.connect(on_settings)
 
-        layout.addWidget(dashboard_button)
-        layout.addWidget(datasets_button)
-        layout.addWidget(experiments_button)
-        layout.addWidget(models_button)
-        layout.addWidget(benchmarks_button)
+        layout.addWidget(self.dashboard_button)
+        layout.addWidget(self.datasets_button)
+        layout.addWidget(self.experiments_button)
+        layout.addWidget(self.models_button)
+        layout.addWidget(self.benchmarks_button)
 
+        # Запазваме настройките отделно в долната част.
         layout.addStretch()
 
-        layout.addWidget(settings_button)
+        layout.addWidget(self.settings_button)

@@ -1,4 +1,3 @@
-
 """Главен прозорец на приложението."""
 
 from PySide6.QtWidgets import (
@@ -35,8 +34,15 @@ class MainWindow(QMainWindow):
 
         # Създаваме страниците на приложението.
         self.dashboard_page = DashboardPage()
+
+        # Първо създаваме страницата за наборите от данни.
         self.datasets_page = DatasetsPage()
-        self.experiments_page = ExperimentsPage()
+
+        # Подаваме я на страницата за експерименти.
+        self.experiments_page = ExperimentsPage(
+            datasets_page=self.datasets_page
+        )
+
         self.models_page = ModelsPage()
         self.benchmarks_page = BenchmarksPage()
         self.settings_page = SettingsPage()

@@ -11,6 +11,7 @@ from PySide6.QtCore import (
     QModelIndex,
     QSortFilterProxyModel,
     Qt,
+    Signal,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -161,6 +162,8 @@ class ColumnFilterProxyModel(QSortFilterProxyModel):
 class DatasetsPage(QWidget):
     """Работно пространство за управление на набори от данни."""
 
+    datasets_changed = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._datasets: dict[str, LoadedDataset] = {}
@@ -179,6 +182,11 @@ class DatasetsPage(QWidget):
         if self._current_path is None:
             return None
         return self._datasets.get(self._current_path)
+
+    @property
+    def loaded_datasets(self) -> dict[str, LoadedDataset]:
+        """Връща копие на всички заредени набори от данни."""
+        return dict(self._datasets)
 
     @staticmethod
     def _dataset_key(dataset: LoadedDataset) -> str:
@@ -745,6 +753,7 @@ class DatasetsPage(QWidget):
 
         self._dataset_list.addItem(item)
         self._dataset_list.setCurrentItem(item)
+        self.datasets_changed.emit()
 
         if update_status:
             self._set_status(
@@ -1385,6 +1394,8 @@ class DatasetsPage(QWidget):
             f"{dataset.path.name} е премахнат от текущата сесия. "
             "Оригиналният файл не е изтрит."
         )
+        self.datasets_changed.emit()
+
         return True
 
     def _set_status(self, message: str) -> None:

@@ -43,7 +43,9 @@ class MainWindow(QMainWindow):
             datasets_page=self.datasets_page
         )
 
-        self.models_page = ModelsPage()
+        self.models_page = ModelsPage(
+            experiments_page=self.experiments_page
+        )
         self.benchmarks_page = BenchmarksPage()
         self.settings_page = SettingsPage()
 

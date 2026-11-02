@@ -1,17 +1,19 @@
-
 from __future__ import annotations
 
+import csv
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from openpyxl import Workbook, load_workbook  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -46,6 +48,24 @@ class DatasetsPageTests(unittest.TestCase):
     ) -> Path:
         path = self.temp_path / filename
         path.write_text(contents, encoding="utf-8")
+        return path
+
+    def create_xlsx(
+        self,
+        filename: str,
+        sheet_name: str,
+        rows: list[list[str]],
+    ) -> Path:
+        path = self.temp_path / filename
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = sheet_name
+
+        for row in rows:
+            worksheet.append(row)
+
+        workbook.save(path)
+        workbook.close()
         return path
 
     def test_import_populates_data_and_quality_tables(self) -> None:
@@ -204,6 +224,136 @@ class DatasetsPageTests(unittest.TestCase):
 
         self.assertIn("Alice,17", exported)
         self.assertIn("Bob,18", exported)
+
+    def test_csv_dataset_can_be_exported_as_xlsx(self) -> None:
+        source_path = self.create_csv(
+            "students.csv",
+            "name,age\nAlice,17\nBob,18\n",
+        )
+        self.assertTrue(self.page.add_dataset(source_path))
+
+        exported_path = self.temp_path / "students_export.xlsx"
+        self.assertTrue(
+            self.page.export_current_dataset(exported_path)
+        )
+        self.assertTrue(exported_path.exists())
+
+        workbook = load_workbook(
+            exported_path,
+            read_only=True,
+            data_only=True,
+        )
+        try:
+            worksheet = workbook["Данни"]
+            exported_rows = list(
+                worksheet.iter_rows(values_only=True)
+            )
+        finally:
+            workbook.close()
+
+        self.assertEqual(
+            exported_rows,
+            [
+                ("name", "age"),
+                ("Alice", "17"),
+                ("Bob", "18"),
+            ],
+        )
+
+    def test_xlsx_dataset_can_be_exported_as_csv(self) -> None:
+        source_path = self.create_xlsx(
+            "students.xlsx",
+            "Ученици",
+            [
+                ["name", "age"],
+                ["Alice", "17"],
+                ["Bob", "18"],
+            ],
+        )
+        self.assertTrue(
+            self.page.add_dataset(
+                source_path,
+                sheet_name="Ученици",
+            )
+        )
+
+        exported_path = self.temp_path / "students_export.csv"
+        self.assertTrue(
+            self.page.export_current_dataset(exported_path)
+        )
+
+        with exported_path.open(
+            "r",
+            encoding="utf-8-sig",
+            newline="",
+        ) as file:
+            exported_rows = list(csv.reader(file))
+
+        self.assertEqual(
+            exported_rows,
+            [
+                ["name", "age"],
+                ["Alice", "17"],
+                ["Bob", "18"],
+            ],
+        )
+
+    def test_export_dialog_uses_selected_excel_format(self) -> None:
+        source_path = self.create_csv(
+            "students.csv",
+            "name,age\nAlice,17\nBob,18\n",
+        )
+        self.assertTrue(self.page.add_dataset(source_path))
+
+        selected_path = self.temp_path / "chosen_export"
+        with patch(
+            "ml_experiment_lab.ui.pages.datasets_page.QFileDialog.getSaveFileName",
+            return_value=(
+                str(selected_path),
+                "Excel файлове (*.xlsx)",
+            ),
+        ):
+            self.page._choose_export_location()
+
+        exported_path = self.temp_path / "chosen_export.xlsx"
+        self.assertTrue(exported_path.exists())
+        self.assertIn(
+            "Excel файл",
+            self.page._status_label.text(),
+        )
+
+    def test_export_dialog_uses_selected_csv_format_for_xlsx(self) -> None:
+        source_path = self.create_xlsx(
+            "students.xlsx",
+            "Ученици",
+            [
+                ["name", "age"],
+                ["Alice", "17"],
+            ],
+        )
+        self.assertTrue(
+            self.page.add_dataset(
+                source_path,
+                sheet_name="Ученици",
+            )
+        )
+
+        selected_path = self.temp_path / "chosen_csv_export"
+        with patch(
+            "ml_experiment_lab.ui.pages.datasets_page.QFileDialog.getSaveFileName",
+            return_value=(
+                str(selected_path),
+                "CSV файлове (*.csv)",
+            ),
+        ):
+            self.page._choose_export_location()
+
+        exported_path = self.temp_path / "chosen_csv_export.csv"
+        self.assertTrue(exported_path.exists())
+        self.assertIn(
+            "CSV файл",
+            self.page._status_label.text(),
+        )
 
     def test_remove_does_not_delete_original_file(self) -> None:
         path = self.create_csv(

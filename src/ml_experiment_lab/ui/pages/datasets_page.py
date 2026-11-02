@@ -1,4 +1,3 @@
-
 """Страница за управление и анализ на набори от данни."""
 
 from __future__ import annotations
@@ -211,7 +210,7 @@ class DatasetsPage(QWidget):
         title_layout.addWidget(subtitle)
 
         self._import_button = QPushButton("Импортиране на данни")
-        self._export_button = QPushButton("Експортиране в CSV")
+        self._export_button = QPushButton("Експортиране")
         self._remove_button = QPushButton("Премахване на набор")
 
         self._export_button.setEnabled(False)
@@ -1189,6 +1188,7 @@ class DatasetsPage(QWidget):
     # ---------------------------------------------------------
 
     def _choose_export_location(self) -> None:
+        """Позволява избор между CSV и Excel при всяко експортиране."""
         dataset = self.current_dataset
 
         if dataset is None:
@@ -1198,24 +1198,49 @@ class DatasetsPage(QWidget):
             return
 
         suggested_path = dataset.path.with_name(
-            f"{dataset.path.stem}_export.csv"
+            f"{dataset.path.stem}_export"
         )
 
-        file_path, _ = QFileDialog.getSaveFileName(
+        csv_filter = "CSV файлове (*.csv)"
+        excel_filter = "Excel файлове (*.xlsx)"
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Експортиране на набор от данни",
             str(suggested_path),
-            "CSV файлове (*.csv)",
+            f"{csv_filter};;{excel_filter}",
+            csv_filter,
         )
 
-        if file_path:
-            self.export_current_dataset(file_path)
+        if not file_path:
+            return
+
+        # Избраният филтър определя формата, включително когато
+        # диалогът връща име без разширение.
+        selected_extension = (
+            ".xlsx" if selected_filter == excel_filter else ".csv"
+        )
+        target_path = Path(file_path).expanduser()
+
+        if target_path.suffix.casefold() != selected_extension:
+            if target_path.suffix:
+                target_path = target_path.with_suffix(selected_extension)
+            else:
+                target_path = target_path.with_name(
+                    f"{target_path.name}{selected_extension}"
+                )
+
+        self.export_current_dataset(target_path)
 
     def export_current_dataset(
         self,
         file_path: str | Path,
     ) -> bool:
-        """Експортира всички редове, включително скритите от търсенето."""
+        """Експортира всички редове, включително скритите от търсенето.
+
+        Форматът се определя от разширението на целевия файл:
+        .csv за CSV и .xlsx за Excel.
+        """
         dataset = self.current_dataset
 
         if dataset is None:
@@ -1225,28 +1250,70 @@ class DatasetsPage(QWidget):
             return False
 
         target_path = Path(file_path).expanduser()
+        extension = target_path.suffix.casefold()
 
-        if target_path.suffix.casefold() != ".csv":
+        if extension not in {".csv", ".xlsx"}:
             target_path = target_path.with_suffix(".csv")
+            extension = ".csv"
+
+        if extension == ".csv":
+            try:
+                with target_path.open(
+                    "w",
+                    encoding="utf-8-sig",
+                    newline="",
+                ) as file:
+                    writer = csv.writer(file)
+                    writer.writerow(dataset.columns)
+                    writer.writerows(dataset.rows)
+            except OSError as exc:
+                self._set_status(
+                    f"CSV файлът не може да бъде експортиран: {exc}"
+                )
+                return False
+
+            self._set_status(
+                f"Наборът е експортиран успешно в CSV файл: "
+                f"{target_path.resolve()}"
+            )
+            return True
 
         try:
-            with target_path.open(
-                "w",
-                encoding="utf-8-sig",
-                newline="",
-            ) as file:
-                writer = csv.writer(file)
-                writer.writerow(dataset.columns)
-                writer.writerows(dataset.rows)
-
-        except OSError as exc:
+            from openpyxl import Workbook
+            from openpyxl.utils.exceptions import IllegalCharacterError
+        except ImportError:
             self._set_status(
-                f"CSV файлът не може да бъде експортиран: {exc}"
+                "Експортирането в Excel изисква библиотеката openpyxl. "
+                "Инсталирайте зависимостите на проекта."
             )
             return False
 
+        workbook = None
+
+        try:
+            workbook = Workbook(write_only=True)
+            worksheet_title = dataset.sheet_name or "Данни"
+            worksheet = workbook.create_sheet(
+                title=worksheet_title[:31]
+            )
+            worksheet.append(list(dataset.columns))
+
+            for row in dataset.rows:
+                worksheet.append(list(row))
+
+            workbook.save(target_path)
+        except (OSError, ValueError, IllegalCharacterError) as exc:
+            self._set_status(
+                f"Excel файлът не може да бъде експортиран: {exc}"
+            )
+            return False
+        finally:
+            if workbook is not None:
+                workbook.close()
+
         self._set_status(
-            f"Наборът е експортиран успешно в: {target_path.resolve()}"
+            f"Наборът е експортиран успешно в Excel файл: "
+            f"{target_path.resolve()}"
         )
         return True
 

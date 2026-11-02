@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -16,6 +18,15 @@ from PySide6.QtWidgets import (
 
 from ml_experiment_lab.datasets import LoadedDataset
 from ml_experiment_lab.ui.pages.datasets_page import DatasetsPage
+
+
+@dataclass(frozen=True)
+class ExperimentConfiguration:
+    """Конфигурация на ML експеримент."""
+
+    dataset: LoadedDataset
+    target_column: str
+    feature_columns: tuple[str, ...]
 
 
 class ExperimentsPage(QWidget):
@@ -60,7 +71,9 @@ class ExperimentsPage(QWidget):
             item = self._features_list.item(index)
 
             if item.checkState() == Qt.CheckState.Checked:
-                column_name = item.data(Qt.ItemDataRole.UserRole)
+                column_name = item.data(
+                    Qt.ItemDataRole.UserRole
+                )
                 selected_columns.append(column_name)
 
         return selected_columns
@@ -69,8 +82,39 @@ class ExperimentsPage(QWidget):
     def has_valid_configuration(self) -> bool:
         """Проверява дали са избрани Target и поне една Feature колона."""
         return (
-            self.selected_target_column is not None
+            self.selected_dataset is not None
+            and self.selected_target_column is not None
             and bool(self.selected_feature_columns)
+        )
+
+    @property
+    def experiment_configuration(
+        self,
+    ) -> ExperimentConfiguration | None:
+        """Връща пълната конфигурация на експеримента.
+
+        Връща None, ако липсва набор от данни,
+        целева колона или поне една входна колона.
+        """
+
+        if not self.has_valid_configuration:
+            return None
+
+        dataset = self.selected_dataset
+        target_column = self.selected_target_column
+        feature_columns = self.selected_feature_columns
+
+        if (
+            dataset is None
+            or target_column is None
+            or not feature_columns
+        ):
+            return None
+
+        return ExperimentConfiguration(
+            dataset=dataset,
+            target_column=target_column,
+            feature_columns=tuple(feature_columns),
         )
 
     def _build_ui(self) -> None:
@@ -254,7 +298,6 @@ class ExperimentsPage(QWidget):
         dataset_key = self._dataset_combo.currentData()
         dataset = self.selected_dataset
 
-        # Обновяваме колоните само когато действително е сменен наборът.
         if dataset_key != self._active_dataset_key:
             self._active_dataset_key = dataset_key
             self._populate_column_selectors(dataset)
@@ -333,8 +376,6 @@ class ExperimentsPage(QWidget):
 
             self._features_list.addItem(feature_item)
 
-        # За ML експеримент са нужни поне две колони:
-        # една целева и поне една входна.
         has_enough_columns = len(columns) >= 2
 
         self._target_combo.setEnabled(has_enough_columns)

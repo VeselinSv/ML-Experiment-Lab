@@ -24,6 +24,7 @@ from sklearn.tree import (
 from ml_experiment_lab.datasets import LoadedDataset
 from ml_experiment_lab.preprocessing import (
     PreparedExperimentData,
+    parse_numeric_value,
     prepare_experiment_data,
     with_training_feature_types,
 )
@@ -74,16 +75,19 @@ class TrainedExperiment:
     @property
     def training_row_count(self) -> int:
         """Връща броя редове, използвани за обучение."""
+
         return self.transformed_data.train_row_count
 
     @property
     def test_row_count(self) -> int:
         """Връща броя редове, оставени за тестване."""
+
         return self.transformed_data.test_row_count
 
     @property
     def feature_count(self) -> int:
         """Връща броя характеристики след обработката."""
+
         return self.transformed_data.feature_count
 
 
@@ -154,6 +158,63 @@ def _create_estimator(
     )
 
 
+def _parse_regression_target(
+    values: np.ndarray,
+) -> np.ndarray:
+    """Преобразува целевите стойности при регресия.
+
+    Поддържа:
+        - цели числа;
+        - десетична точка;
+        - десетична запетая;
+        - отрицателни числа;
+        - научна нотация.
+
+    Невалидните и безкрайните стойности
+    не се допускат.
+    """
+
+    numeric_values = []
+
+    for value in values:
+        text = str(value).strip()
+
+        number = parse_numeric_value(text)
+
+        if number is None:
+            # Разграничаваме невалидните числови
+            # стойности от неподдържания текст.
+            try:
+                candidate = float(
+                    text.replace(",", ".")
+                )
+
+            except (ValueError, TypeError, OverflowError):
+                candidate = None
+
+            if (
+                candidate is not None
+                and not np.isfinite(candidate)
+            ):
+                raise ModelTrainingError(
+                    "Целевата колона съдържа невалидни "
+                    f"числови стойности: „{text}“."
+                )
+
+            raise ModelTrainingError(
+                "При регресия целевата колона трябва "
+                "да съдържа числови стойности. "
+                f"Невалидна стойност: „{text}“."
+            )
+
+        numeric_values.append(number)
+
+    return np.asarray(
+        numeric_values,
+        dtype=float,
+    )
+
+
 def _prepare_target_values(
     task_type: TaskType,
     y_train: np.ndarray,
@@ -161,6 +222,8 @@ def _prepare_target_values(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Проверява и подготвя целевите стойности."""
 
+    # При класификация Target стойностите
+    # се запазват като категории.
     if task_type == "classification":
         unique_classes = np.unique(y_train)
 
@@ -172,23 +235,14 @@ def _prepare_target_values(
 
         return y_train, y_test
 
-    try:
-        numeric_train = np.asarray(y_train, dtype=float)
-        numeric_test = np.asarray(y_test, dtype=float)
+    # При регресия използваме общия числов parser.
+    numeric_train = _parse_regression_target(
+        y_train
+    )
 
-    except (ValueError, TypeError) as exc:
-        raise ModelTrainingError(
-            "При регресия целевата колона трябва "
-            "да съдържа числови стойности."
-        ) from exc
-
-    if (
-        not np.isfinite(numeric_train).all()
-        or not np.isfinite(numeric_test).all()
-    ):
-        raise ModelTrainingError(
-            "Целевата колона съдържа невалидни числови стойности."
-        )
+    numeric_test = _parse_regression_target(
+        y_test
+    )
 
     return numeric_train, numeric_test
 
@@ -210,15 +264,13 @@ def train_experiment_model(
         3. Разпознава типовете само от Training.
         4. Обучава трансформатора само върху Training.
         5. Трансформира Training и Test.
-        6. Проверява целевите стойности.
+        6. Проверява и преобразува целевите стойности.
         7. Създава ML модел.
         8. Обучава модела върху Training данните.
 
     Тестовите данни не участват в разпознаването
     на типовете, обучението на трансформатора
     или обучението на ML модела.
-
-    Те ще се използват за последваща оценка.
     """
 
     available_algorithms = dict(

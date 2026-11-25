@@ -77,6 +77,15 @@ def _to_number(value: str) -> float | None:
     return number
 
 
+def parse_numeric_value(value: str) -> float | None:
+    """Преобразува стойност в число чрез общия числов parser.
+
+    Връща None при липсваща или невалидна стойност.
+    """
+
+    return _to_number(value)
+
+
 def _validate_selection(
     dataset: LoadedDataset,
     target_column: str,

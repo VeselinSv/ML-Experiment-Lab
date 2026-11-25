@@ -15,7 +15,10 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     FunctionTransformer,
+    MaxAbsScaler,
+    MinMaxScaler,
     OneHotEncoder,
+    RobustScaler,
     StandardScaler,
 )
 from sklearn.utils.validation import check_is_fitted
@@ -45,6 +48,14 @@ CategoricalImputationStrategy = Literal[
     "constant",
 ]
 
+ScalingMethod = Literal[
+    "standard",
+    "minmax",
+    "robust",
+    "maxabs",
+    "none",
+]
+
 FeatureType = Literal[
     "numeric",
     "categorical",
@@ -62,6 +73,14 @@ NUMERIC_IMPUTATION_STRATEGIES = {
 CATEGORICAL_IMPUTATION_STRATEGIES = {
     "most_frequent": "Най-често срещана категория",
     "constant": "Константна стойност",
+}
+
+SCALING_METHODS = {
+    "standard": "Стандартизиране (StandardScaler)",
+    "minmax": "Нормализиране (MinMaxScaler)",
+    "robust": "Устойчиво мащабиране (RobustScaler)",
+    "maxabs": "Максимална абсолютна стойност (MaxAbsScaler)",
+    "none": "Без мащабиране",
 }
 
 
@@ -88,6 +107,8 @@ class PreprocessingConfiguration:
     drop_empty_columns: bool = False
 
     drop_constant_features: bool = False
+
+    scaling_method: ScalingMethod = "standard"
 
     def __post_init__(self) -> None:
         """Проверява валидността на настройките."""
@@ -172,6 +193,15 @@ class PreprocessingConfiguration:
                 "характеристики трябва да бъде булева стойност."
             )
 
+        if (
+            not isinstance(self.scaling_method, str)
+            or self.scaling_method not in SCALING_METHODS
+        ):
+            raise PreprocessingError(
+                "Неподдържан метод за мащабиране "
+                "на числовите характеристики."
+            )
+
 
 @dataclass(frozen=True)
 class PreparedExperimentData:
@@ -212,17 +242,13 @@ class FeatureSelectionReport:
     def removed_empty_count(self) -> int:
         """Връща броя на премахнатите празни колони."""
 
-        return len(
-            self.removed_empty_columns
-        )
+        return len(self.removed_empty_columns)
 
     @property
     def removed_constant_count(self) -> int:
         """Връща броя на премахнатите постоянни характеристики."""
 
-        return len(
-            self.removed_constant_features
-        )
+        return len(self.removed_constant_features)
 
 
 def _to_number(value: str) -> float | None:
@@ -504,10 +530,7 @@ def _select_feature_indexes(
     drop_empty_columns: bool,
     empty: bool | None = None,
 ) -> list[int]:
-    """Избира колони според типа и настройките за филтриране.
-
-    Функцията се извиква при обучението на трансформатора.
-    """
+    """Избира колони според типа и настройките за филтриране."""
 
     # При отложено разпознаване определяме
     # типовете само от подадените Training данни.
@@ -708,6 +731,47 @@ def _build_numeric_imputer(
     )
 
 
+def _build_scaler(
+    configuration: PreprocessingConfiguration,
+) -> (
+    StandardScaler
+    | MinMaxScaler
+    | RobustScaler
+    | MaxAbsScaler
+    | Literal["passthrough"]
+):
+    """Създава избрания метод за мащабиране.
+
+    При метод none стъпката за мащабиране се пропуска.
+    """
+
+    method = configuration.scaling_method
+
+    if method == "standard":
+        return StandardScaler()
+
+    if method == "minmax":
+        return MinMaxScaler(
+            feature_range=(0, 1),
+            clip=False,
+        )
+
+    if method == "robust":
+        return RobustScaler(
+            quantile_range=(25.0, 75.0),
+        )
+
+    if method == "maxabs":
+        return MaxAbsScaler()
+
+    if method == "none":
+        return "passthrough"
+
+    raise PreprocessingError(
+        f"Неподдържан метод за мащабиране: „{method}“."
+    )
+
+
 def _build_numeric_pipeline(
     configuration: PreprocessingConfiguration,
     defer_type_detection: bool,
@@ -736,7 +800,7 @@ def _build_numeric_pipeline(
             ),
             (
                 "scaler",
-                StandardScaler(),
+                _build_scaler(configuration),
             ),
         ]
     )
@@ -810,7 +874,9 @@ def _build_datetime_pipeline(
             ),
             (
                 "scaler",
-                StandardScaler(),
+                _build_scaler(
+                    configuration
+                ),
             ),
         ]
     )
@@ -1080,7 +1146,8 @@ def prepare_experiment_data(
         - датни характеристики;
         - конфигурируемо попълване на липсващи стойности;
         - премахване на изцяло празни колони;
-        - премахване на постоянни характеристики.
+        - премахване на постоянни характеристики;
+        - конфигурируемо мащабиране.
 
     При defer_type_detection=True типовете се разпознават
     след разделянето на Training и Test.

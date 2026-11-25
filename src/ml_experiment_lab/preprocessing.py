@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, replace
-from typing import Sequence
+from dataclasses import dataclass, field, replace
+from functools import partial
+from typing import Literal, Sequence
 
 import numpy as np
 from sklearn.compose import ColumnTransformer
@@ -24,12 +25,110 @@ class PreprocessingError(ValueError):
     """Грешка при подготовката на данните за ML експеримент."""
 
 
+NumericImputationStrategy = Literal[
+    "mean",
+    "median",
+    "most_frequent",
+    "constant",
+]
+
+CategoricalImputationStrategy = Literal[
+    "most_frequent",
+    "constant",
+]
+
+
+NUMERIC_IMPUTATION_STRATEGIES = {
+    "mean": "Средноаритметична стойност",
+    "median": "Медиана",
+    "most_frequent": "Най-често срещана стойност",
+    "constant": "Константна стойност",
+}
+
+CATEGORICAL_IMPUTATION_STRATEGIES = {
+    "most_frequent": "Най-често срещана категория",
+    "constant": "Константна стойност",
+}
+
+
 # Поддържани числови формати:
 # 25, -25, 25.50, 25,50, .5, ,5, 1e3, 1,5e3.
 NUMERIC_PATTERN = re.compile(
     r"[+-]?(?:[0-9]+(?:\.[0-9]*|,[0-9]+)?|[.,][0-9]+)"
     r"(?:[eE][+-]?[0-9]+)?"
 )
+
+
+@dataclass(frozen=True)
+class PreprocessingConfiguration:
+    """Настройки за предварителна обработка на ML данни."""
+
+    numeric_imputation_strategy: NumericImputationStrategy = "median"
+
+    categorical_imputation_strategy: (
+        CategoricalImputationStrategy
+    ) = "constant"
+
+    numeric_fill_value: float = 0.0
+
+    categorical_fill_value: str = "ЛИПСВАЩА_СТОЙНОСТ"
+
+    def __post_init__(self) -> None:
+        """Проверява валидността на настройките."""
+
+        if (
+            self.numeric_imputation_strategy
+            not in NUMERIC_IMPUTATION_STRATEGIES
+        ):
+            raise PreprocessingError(
+                "Неподдържана стратегия за обработка "
+                "на липсващи числови стойности."
+            )
+
+        if (
+            self.categorical_imputation_strategy
+            not in CATEGORICAL_IMPUTATION_STRATEGIES
+        ):
+            raise PreprocessingError(
+                "Неподдържана стратегия за обработка "
+                "на липсващи категориални стойности."
+            )
+
+        if (
+            isinstance(self.numeric_fill_value, bool)
+            or not isinstance(
+                self.numeric_fill_value,
+                (int, float),
+            )
+        ):
+            raise PreprocessingError(
+                "Числовата константа трябва да бъде число."
+            )
+
+        try:
+            is_finite = math.isfinite(
+                self.numeric_fill_value
+            )
+        except OverflowError:
+            is_finite = False
+
+        if not is_finite:
+            raise PreprocessingError(
+                "Числовата константа трябва да бъде "
+                "крайна числова стойност."
+            )
+
+        if (
+            not isinstance(
+                self.categorical_fill_value,
+                str,
+            )
+            or not self.categorical_fill_value.strip()
+        ):
+            raise PreprocessingError(
+                "Категориалната константа трябва "
+                "да бъде непразна текстова стойност."
+            )
 
 
 @dataclass(frozen=True)
@@ -47,6 +146,10 @@ class PreparedExperimentData:
 
     mixed_columns: tuple[str, ...] = ()
     empty_columns: tuple[str, ...] = ()
+
+    preprocessing_configuration: PreprocessingConfiguration = field(
+        default_factory=PreprocessingConfiguration
+    )
 
 
 def _to_number(value: str) -> float | None:
@@ -78,10 +181,7 @@ def _to_number(value: str) -> float | None:
 
 
 def parse_numeric_value(value: str) -> float | None:
-    """Преобразува стойност в число чрез общия числов parser.
-
-    Връща None при липсваща или невалидна стойност.
-    """
+    """Преобразува стойност чрез общия числов parser."""
 
     return _to_number(value)
 
@@ -186,8 +286,6 @@ def _detect_feature_types(
         else:
             mixed_columns.append(column_name)
 
-            # Запазваме смесените колони като категории,
-            # за да не губим информация автоматично.
             categorical_columns.append(column_name)
 
     return (
@@ -207,11 +305,7 @@ def _detect_training_feature_types(
     tuple[str, ...],
     tuple[str, ...],
 ]:
-    """Разпознава типовете от необработени тренировъчни данни.
-
-    Входните стойности в режима с отложено
-    разпознаване са представени като текст или NaN.
-    """
+    """Разпознава типовете от необработени тренировъчни данни."""
 
     rows = tuple(
         tuple(
@@ -271,12 +365,47 @@ def _select_training_categorical_indexes(
     ]
 
 
+def _select_categorical_by_empty(
+    X: np.ndarray,
+    *,
+    fixed_indexes: tuple[int, ...] | None,
+    empty: bool,
+) -> list[int]:
+    """Разделя категориалните колони на празни и непразни.
+
+    Проверката се извършва върху данните,
+    подадени при обучението на трансформатора.
+    """
+
+    if fixed_indexes is None:
+        categorical_indexes = (
+            _select_training_categorical_indexes(X)
+        )
+    else:
+        categorical_indexes = list(fixed_indexes)
+
+    selected_indexes = []
+
+    for index in categorical_indexes:
+        has_observed_values = any(
+            isinstance(value, str) and bool(value.strip())
+            for value in X[:, index]
+        )
+
+        is_empty = not has_observed_values
+
+        if is_empty == empty:
+            selected_indexes.append(index)
+
+    return selected_indexes
+
+
 def _convert_numeric_features(
     X: np.ndarray,
 ) -> np.ndarray:
     """Преобразува входните стойности в числа.
 
-    Липсващите и невалидните числови стойности
+    Липсващите и невалидните стойности
     се преобразуват в NaN.
     """
 
@@ -325,53 +454,120 @@ def with_training_feature_types(
     )
 
 
+def _build_numeric_pipeline(
+    configuration: PreprocessingConfiguration,
+    defer_type_detection: bool,
+) -> Pipeline:
+    """Създава pipeline за числовите характеристики."""
+
+    numeric_steps = []
+
+    # При отложено разпознаване числата
+    # все още са представени като текст.
+    if defer_type_detection:
+        numeric_steps.append(
+            (
+                "parser",
+                FunctionTransformer(
+                    _convert_numeric_features,
+                    feature_names_out="one-to-one",
+                ),
+            )
+        )
+
+    fill_value = (
+        float(configuration.numeric_fill_value)
+        if configuration.numeric_imputation_strategy == "constant"
+        else None
+    )
+
+    numeric_steps.extend(
+        [
+            (
+                "imputer",
+                SimpleImputer(
+                    strategy=(
+                        configuration.numeric_imputation_strategy
+                    ),
+                    fill_value=fill_value,
+                    keep_empty_features=True,
+                ),
+            ),
+            (
+                "scaler",
+                StandardScaler(),
+            ),
+        ]
+    )
+
+    return Pipeline(
+        steps=numeric_steps
+    )
+
+
+def _build_categorical_pipeline(
+    configuration: PreprocessingConfiguration,
+    *,
+    force_constant: bool = False,
+) -> Pipeline:
+    """Създава pipeline за категориалните характеристики."""
+
+    strategy = (
+        "constant"
+        if force_constant
+        else configuration.categorical_imputation_strategy
+    )
+
+    fill_value = (
+        configuration.categorical_fill_value
+        if strategy == "constant"
+        else None
+    )
+
+    return Pipeline(
+        steps=[
+            (
+                "imputer",
+                SimpleImputer(
+                    strategy=strategy,
+                    fill_value=fill_value,
+                    keep_empty_features=True,
+                ),
+            ),
+            (
+                "encoder",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False,
+                ),
+            ),
+        ]
+    )
+
+
 def _build_preprocessor(
     numeric_indexes: tuple[int, ...] = (),
     categorical_indexes: tuple[int, ...] = (),
     *,
     defer_type_detection: bool = False,
+    configuration: PreprocessingConfiguration | None = None,
 ) -> ColumnTransformer:
-    """Създава pipeline за предварителна обработка.
+    """Създава конфигурируем pipeline за обработка.
 
     При отложено разпознаване типовете се определят
-    при fit() само от подадените тренировъчни данни.
+    при fit() само от тренировъчните данни.
     """
+
+    if configuration is None:
+        configuration = PreprocessingConfiguration()
 
     transformers = []
 
-    # Pipeline за числови характеристики.
+    # Обработка на числовите характеристики.
     if numeric_indexes or defer_type_detection:
-        numeric_steps = []
-
-        if defer_type_detection:
-            numeric_steps.append(
-                (
-                    "parser",
-                    FunctionTransformer(
-                        _convert_numeric_features,
-                        feature_names_out="one-to-one",
-                    ),
-                )
-            )
-
-        numeric_steps.extend(
-            [
-                (
-                    "imputer",
-                    SimpleImputer(
-                        strategy="median",
-                        keep_empty_features=True,
-                    ),
-                ),
-                (
-                    "scaler",
-                    StandardScaler(),
-                ),
-            ]
-        )
-
-        numeric_pipeline = Pipeline(
-            steps=numeric_steps
+        numeric_pipeline = _build_numeric_pipeline(
+            configuration=configuration,
+            defer_type_detection=defer_type_detection,
         )
 
         numeric_selector = (
@@ -388,41 +584,72 @@ def _build_preprocessor(
             )
         )
 
-    # Pipeline за категориални характеристики.
+    # Обработка на категориалните характеристики.
     if categorical_indexes or defer_type_detection:
-        categorical_pipeline = Pipeline(
-            steps=[
-                (
-                    "imputer",
-                    SimpleImputer(
-                        strategy="constant",
-                        fill_value="ЛИПСВАЩА_СТОЙНОСТ",
-                        keep_empty_features=True,
-                    ),
-                ),
-                (
-                    "encoder",
-                    OneHotEncoder(
-                        handle_unknown="ignore",
-                        sparse_output=False,
-                    ),
-                ),
-            ]
-        )
 
-        categorical_selector = (
-            _select_training_categorical_indexes
-            if defer_type_detection
-            else list(categorical_indexes)
-        )
+        if (
+            configuration.categorical_imputation_strategy
+            == "most_frequent"
+        ):
+            # Изцяло празна колона няма най-честа категория.
+            # Затова използваме отделен pipeline,
+            # който я попълва с текстовата константа.
 
-        transformers.append(
-            (
-                "categorical",
-                categorical_pipeline,
-                categorical_selector,
+            fixed_indexes = (
+                None
+                if defer_type_detection
+                else categorical_indexes
             )
-        )
+
+            nonempty_selector = partial(
+                _select_categorical_by_empty,
+                fixed_indexes=fixed_indexes,
+                empty=False,
+            )
+
+            empty_selector = partial(
+                _select_categorical_by_empty,
+                fixed_indexes=fixed_indexes,
+                empty=True,
+            )
+
+            transformers.append(
+                (
+                    "categorical",
+                    _build_categorical_pipeline(
+                        configuration=configuration,
+                    ),
+                    nonempty_selector,
+                )
+            )
+
+            transformers.append(
+                (
+                    "categorical_empty",
+                    _build_categorical_pipeline(
+                        configuration=configuration,
+                        force_constant=True,
+                    ),
+                    empty_selector,
+                )
+            )
+
+        else:
+            categorical_selector = (
+                _select_training_categorical_indexes
+                if defer_type_detection
+                else list(categorical_indexes)
+            )
+
+            transformers.append(
+                (
+                    "categorical",
+                    _build_categorical_pipeline(
+                        configuration=configuration,
+                    ),
+                    categorical_selector,
+                )
+            )
 
     return ColumnTransformer(
         transformers=transformers,
@@ -438,21 +665,35 @@ def prepare_experiment_data(
     feature_columns: Sequence[str],
     *,
     defer_type_detection: bool = False,
+    preprocessing_configuration: (
+        PreprocessingConfiguration | None
+    ) = None,
 ) -> PreparedExperimentData:
-    """Подготвя X, y и необучен трансформатор за експеримент.
+    """Подготвя X, y и необучен трансформатор.
 
-    При стандартния режим числовите характеристики
-    се преобразуват в числа, а категориалните остават
-    текстови.
+    При defer_type_detection=True типовете се разпознават
+    след разделянето на Training и Test.
 
-    При defer_type_detection=True входните стойности
-    се запазват като текст или NaN до разделянето
-    на тренировъчна и тестова извадка.
+    Настройките за предварителна обработка могат
+    да бъдат зададени чрез PreprocessingConfiguration.
 
     Редовете с липсваща целева стойност се изключват.
 
     Трансформаторът не се обучава тук.
     """
+
+    if preprocessing_configuration is None:
+        preprocessing_configuration = (
+            PreprocessingConfiguration()
+        )
+
+    if not isinstance(
+        preprocessing_configuration,
+        PreprocessingConfiguration,
+    ):
+        raise PreprocessingError(
+            "Невалидна конфигурация за предварителна обработка."
+        )
 
     selected_features = _validate_selection(
         dataset,
@@ -460,7 +701,9 @@ def prepare_experiment_data(
         feature_columns,
     )
 
-    target_index = dataset.columns.index(target_column)
+    target_index = dataset.columns.index(
+        target_column
+    )
 
     feature_indexes = tuple(
         dataset.columns.index(column)
@@ -468,13 +711,16 @@ def prepare_experiment_data(
     )
 
     # Проверяваме структурата на всички редове.
-    for row_number, row in enumerate(dataset.rows, start=1):
+    for row_number, row in enumerate(
+        dataset.rows,
+        start=1,
+    ):
         if len(row) != dataset.column_count:
             raise PreprocessingError(
                 f"Ред {row_number} има неправилен брой стойности."
             )
 
-    # Изключваме редовете с липсваща целева стойност.
+    # Изключваме редовете с липсващ Target.
     valid_rows = []
     excluded_rows = 0
 
@@ -494,68 +740,31 @@ def prepare_experiment_data(
 
     valid_rows_tuple = tuple(valid_rows)
 
-    # При реален ML експеримент отлагаме
-    # разпознаването на типовете до Training.
+    # При реално обучение типовете ще бъдат определени
+    # след разделяне на тренировъчна и тестова извадка.
     if defer_type_detection:
-        feature_rows = []
-        target_values = []
+        numeric_columns = ()
+        categorical_columns = ()
+        mixed_columns = ()
+        empty_columns = ()
 
-        for row in valid_rows_tuple:
-            prepared_row = []
-
-            for source_index in feature_indexes:
-                value = row[source_index].strip()
-
-                prepared_row.append(
-                    value if value else np.nan
-                )
-
-            feature_rows.append(prepared_row)
-
-            target_values.append(
-                row[target_index].strip()
-            )
-
-        X = np.asarray(
-            feature_rows,
-            dtype=object,
+    else:
+        (
+            numeric_columns,
+            categorical_columns,
+            mixed_columns,
+            empty_columns,
+        ) = _detect_feature_types(
+            valid_rows_tuple,
+            feature_indexes,
+            selected_features,
         )
-
-        y = np.asarray(
-            target_values,
-            dtype=object,
-        )
-
-        return PreparedExperimentData(
-            X=X,
-            y=y,
-            preprocessor=_build_preprocessor(
-                defer_type_detection=True,
-            ),
-            feature_columns=selected_features,
-            target_column=target_column,
-            numeric_columns=(),
-            categorical_columns=(),
-            excluded_rows=excluded_rows,
-            mixed_columns=(),
-            empty_columns=(),
-        )
-
-    # Стандартен режим за самостоятелна
-    # подготовка и анализ на данните.
-    (
-        numeric_columns,
-        categorical_columns,
-        mixed_columns,
-        empty_columns,
-    ) = _detect_feature_types(
-        valid_rows_tuple,
-        feature_indexes,
-        selected_features,
-    )
 
     numeric_column_set = set(numeric_columns)
-    categorical_column_set = set(categorical_columns)
+
+    categorical_column_set = set(
+        categorical_columns
+    )
 
     # Индекси спрямо новата матрица X.
     numeric_indexes = tuple(
@@ -582,19 +791,26 @@ def prepare_experiment_data(
         ):
             value = row[source_index].strip()
 
-            if column in numeric_column_set:
+            if (
+                not defer_type_detection
+                and column in numeric_column_set
+            ):
                 number = _to_number(value)
 
                 prepared_row.append(
                     np.nan if number is None else number
                 )
+
             else:
                 prepared_row.append(
                     value if value else np.nan
                 )
 
         feature_rows.append(prepared_row)
-        target_values.append(row[target_index].strip())
+
+        target_values.append(
+            row[target_index].strip()
+        )
 
     X = np.asarray(
         feature_rows,
@@ -607,8 +823,10 @@ def prepare_experiment_data(
     )
 
     preprocessor = _build_preprocessor(
-        numeric_indexes,
-        categorical_indexes,
+        numeric_indexes=numeric_indexes,
+        categorical_indexes=categorical_indexes,
+        defer_type_detection=defer_type_detection,
+        configuration=preprocessing_configuration,
     )
 
     return PreparedExperimentData(
@@ -622,4 +840,7 @@ def prepare_experiment_data(
         excluded_rows=excluded_rows,
         mixed_columns=mixed_columns,
         empty_columns=empty_columns,
+        preprocessing_configuration=(
+            preprocessing_configuration
+        ),
     )

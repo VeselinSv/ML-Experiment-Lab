@@ -22,16 +22,20 @@ from sklearn.tree import (
 )
 
 from ml_experiment_lab.datasets import LoadedDataset
+
 from ml_experiment_lab.preprocessing import (
     PreparedExperimentData,
+    PreprocessingConfiguration,
     parse_numeric_value,
     prepare_experiment_data,
     with_training_feature_types,
 )
+
 from ml_experiment_lab.splitting import (
     ExperimentDataSplit,
     split_experiment_data,
 )
+
 from ml_experiment_lab.transformation import (
     TransformedExperimentSplit,
     transform_experiment_split,
@@ -90,6 +94,16 @@ class TrainedExperiment:
 
         return self.transformed_data.feature_count
 
+    @property
+    def preprocessing_configuration(
+        self,
+    ) -> PreprocessingConfiguration:
+        """Връща използваната конфигурация за обработка."""
+
+        return (
+            self.prepared_data.preprocessing_configuration
+        )
+
 
 def get_available_algorithms(
     task_type: TaskType,
@@ -118,6 +132,7 @@ def _create_estimator(
     """Създава ML модел според типа задача и алгоритъма."""
 
     if task_type == "classification":
+
         if algorithm == "logistic_regression":
             return LogisticRegression(
                 max_iter=1000,
@@ -137,6 +152,7 @@ def _create_estimator(
             )
 
     elif task_type == "regression":
+
         if algorithm == "linear_regression":
             return LinearRegression()
 
@@ -163,12 +179,8 @@ def _parse_regression_target(
 ) -> np.ndarray:
     """Преобразува целевите стойности при регресия.
 
-    Поддържа:
-        - цели числа;
-        - десетична точка;
-        - десетична запетая;
-        - отрицателни числа;
-        - научна нотация.
+    Поддържа цели числа, десетична точка,
+    десетична запетая и научна нотация.
 
     Невалидните и безкрайните стойности
     не се допускат.
@@ -182,8 +194,7 @@ def _parse_regression_target(
         number = parse_numeric_value(text)
 
         if number is None:
-            # Разграничаваме невалидните числови
-            # стойности от неподдържания текст.
+
             try:
                 candidate = float(
                     text.replace(",", ".")
@@ -222,9 +233,9 @@ def _prepare_target_values(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Проверява и подготвя целевите стойности."""
 
-    # При класификация Target стойностите
-    # се запазват като категории.
+    # При класификация Target остава категориален.
     if task_type == "classification":
+
         unique_classes = np.unique(y_train)
 
         if len(unique_classes) < 2:
@@ -235,7 +246,7 @@ def _prepare_target_values(
 
         return y_train, y_test
 
-    # При регресия използваме общия числов parser.
+    # При регресия преобразуваме Target в числа.
     numeric_train = _parse_regression_target(
         y_train
     )
@@ -255,22 +266,30 @@ def train_experiment_model(
     algorithm: str,
     test_size: float = 0.2,
     random_state: int = 42,
+    *,
+    preprocessing_configuration: (
+        PreprocessingConfiguration | None
+    ) = None,
 ) -> TrainedExperiment:
     """Подготвя, разделя, трансформира и обучава ML модел.
 
     Последователност:
         1. Подготвя необработените входни и целеви данни.
-        2. Разделя ги на Training и Test.
-        3. Разпознава типовете само от Training.
-        4. Обучава трансформатора само върху Training.
-        5. Трансформира Training и Test.
-        6. Проверява и преобразува целевите стойности.
-        7. Създава ML модел.
-        8. Обучава модела върху Training данните.
+        2. Приема настройките за предварителна обработка.
+        3. Разделя данните на Training и Test.
+        4. Разпознава типовете само от Training.
+        5. Обучава трансформатора само върху Training.
+        6. Трансформира Training и Test.
+        7. Проверява и преобразува целевите стойности.
+        8. Създава ML модел.
+        9. Обучава модела върху Training данните.
+
+    Ако няма подадена конфигурация, използва
+    настройките за обработка по подразбиране.
 
     Тестовите данни не участват в разпознаването
-    на типовете, обучението на трансформатора
-    или обучението на ML модела.
+    на типовете или обучението на трансформатора
+    и ML модела.
     """
 
     available_algorithms = dict(
@@ -283,13 +302,15 @@ def train_experiment_model(
             f"за задача „{task_type}“."
         )
 
-    # Подготвяме данните, без предварително
-    # разпознаване на типовете колони.
+    # Подготвяме необработените данни и конфигурацията.
     prepared_data = prepare_experiment_data(
         dataset=dataset,
         target_column=target_column,
         feature_columns=feature_columns,
         defer_type_detection=True,
+        preprocessing_configuration=(
+            preprocessing_configuration
+        ),
     )
 
     # Разделяме необработените данни.
@@ -299,8 +320,7 @@ def train_experiment_model(
         random_state=random_state,
     )
 
-    # Записваме типовете, разпознати единствено
-    # от тренировъчната извадка.
+    # Записваме типовете само от Training.
     prepared_data = with_training_feature_types(
         prepared_data=prepared_data,
         X_train=data_split.X_train,
@@ -334,7 +354,7 @@ def train_experiment_model(
         random_state=random_state,
     )
 
-    # Обучаваме модела само върху Training данните.
+    # Обучаваме модела само върху Training.
     try:
         estimator.fit(
             transformed_data.X_train,

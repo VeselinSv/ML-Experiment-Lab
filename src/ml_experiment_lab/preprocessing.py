@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -19,6 +20,14 @@ class PreprocessingError(ValueError):
     """Грешка при подготовката на данните за ML експеримент."""
 
 
+# Поддържани числови формати:
+# 25, -25, 25.50, 25,50, .5, ,5, 1e3, 1,5e3.
+NUMERIC_PATTERN = re.compile(
+    r"[+-]?(?:[0-9]+(?:\.[0-9]*|,[0-9]+)?|[.,][0-9]+)"
+    r"(?:[eE][+-]?[0-9]+)?"
+)
+
+
 @dataclass(frozen=True)
 class PreparedExperimentData:
     """Подготвени входни и целеви данни за ML експеримент."""
@@ -32,16 +41,29 @@ class PreparedExperimentData:
     categorical_columns: tuple[str, ...]
     excluded_rows: int
 
+    mixed_columns: tuple[str, ...] = ()
+    empty_columns: tuple[str, ...] = ()
+
 
 def _to_number(value: str) -> float | None:
-    """Опитва да преобразува текстова стойност във валидно число."""
+    """Преобразува текстова стойност във валидно число.
+
+    Поддържа десетична точка, десетична запетая,
+    отрицателни числа и научна нотация.
+    """
+
     value = value.strip()
 
     if not value:
         return None
 
+    if NUMERIC_PATTERN.fullmatch(value) is None:
+        return None
+
+    normalized_value = value.replace(",", ".")
+
     try:
-        number = float(value)
+        number = float(normalized_value)
     except ValueError:
         return None
 
@@ -77,7 +99,8 @@ def _validate_selection(
 
     if len(set(selected_features)) != len(selected_features):
         raise PreprocessingError(
-            "Не можете да изберете една и съща входна колона повече от веднъж."
+            "Не можете да изберете една и съща входна колона "
+            "повече от веднъж."
         )
 
     if target_column in selected_features:
@@ -104,11 +127,18 @@ def _detect_feature_types(
     rows: tuple[tuple[str, ...], ...],
     feature_indexes: tuple[int, ...],
     feature_columns: tuple[str, ...],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Разделя входните колони на числови и категориални."""
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    """Разпознава числови, категориални, смесени и празни колони."""
 
     numeric_columns = []
     categorical_columns = []
+    mixed_columns = []
+    empty_columns = []
 
     for column_name, column_index in zip(
         feature_columns,
@@ -120,19 +150,38 @@ def _detect_feature_types(
             if row[column_index].strip()
         ]
 
-        is_numeric = bool(values) and all(
+        # Изцяло празна колона.
+        if not values:
+            empty_columns.append(column_name)
+            categorical_columns.append(column_name)
+            continue
+
+        numeric_count = sum(
             _to_number(value) is not None
             for value in values
         )
 
-        if is_numeric:
+        # Всички непразни стойности са числа.
+        if numeric_count == len(values):
             numeric_columns.append(column_name)
+
+        # Нито една стойност не е число.
+        elif numeric_count == 0:
+            categorical_columns.append(column_name)
+
+        # Колоната съдържа едновременно числа и текст.
         else:
+            mixed_columns.append(column_name)
+
+            # Засега запазваме стойностите като категории,
+            # за да не губим информация автоматично.
             categorical_columns.append(column_name)
 
     return (
         tuple(numeric_columns),
         tuple(categorical_columns),
+        tuple(mixed_columns),
+        tuple(empty_columns),
     )
 
 
@@ -218,10 +267,7 @@ def prepare_experiment_data(
 
     Редовете с липсваща целева стойност се изключват.
 
-    Важно:
-        Трансформаторът не се обучава тук. След разделяне на
-        данните трябва да се извика fit_transform() върху
-        обучаващата извадка и transform() върху тестовата.
+    Трансформаторът не се обучава тук.
     """
 
     selected_features = _validate_selection(
@@ -237,14 +283,14 @@ def prepare_experiment_data(
         for column in selected_features
     )
 
-    # Проверяваме дали всички редове имат правилния брой стойности.
+    # Проверяваме структурата на всички редове.
     for row_number, row in enumerate(dataset.rows, start=1):
         if len(row) != dataset.column_count:
             raise PreprocessingError(
                 f"Ред {row_number} има неправилен брой стойности."
             )
 
-    # Изключваме редовете без целева стойност.
+    # Изключваме редовете с липсваща целева стойност.
     valid_rows = []
     excluded_rows = 0
 
@@ -264,24 +310,31 @@ def prepare_experiment_data(
 
     valid_rows_tuple = tuple(valid_rows)
 
-    numeric_columns, categorical_columns = _detect_feature_types(
+    (
+        numeric_columns,
+        categorical_columns,
+        mixed_columns,
+        empty_columns,
+    ) = _detect_feature_types(
         valid_rows_tuple,
         feature_indexes,
         selected_features,
     )
 
-    # Индексите тук са спрямо новата матрица X,
-    # а не спрямо първоначалния набор от данни.
+    numeric_column_set = set(numeric_columns)
+    categorical_column_set = set(categorical_columns)
+
+    # Индекси спрямо новата матрица X.
     numeric_indexes = tuple(
         index
         for index, column in enumerate(selected_features)
-        if column in numeric_columns
+        if column in numeric_column_set
     )
 
     categorical_indexes = tuple(
         index
         for index, column in enumerate(selected_features)
-        if column in categorical_columns
+        if column in categorical_column_set
     )
 
     feature_rows = []
@@ -296,7 +349,7 @@ def prepare_experiment_data(
         ):
             value = row[source_index].strip()
 
-            if column in numeric_columns:
+            if column in numeric_column_set:
                 number = _to_number(value)
 
                 prepared_row.append(
@@ -334,4 +387,6 @@ def prepare_experiment_data(
         numeric_columns=numeric_columns,
         categorical_columns=categorical_columns,
         excluded_rows=excluded_rows,
+        mixed_columns=mixed_columns,
+        empty_columns=empty_columns,
     )

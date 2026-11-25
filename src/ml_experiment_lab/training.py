@@ -25,6 +25,7 @@ from ml_experiment_lab.datasets import LoadedDataset
 from ml_experiment_lab.preprocessing import (
     PreparedExperimentData,
     prepare_experiment_data,
+    with_training_feature_types,
 )
 from ml_experiment_lab.splitting import (
     ExperimentDataSplit,
@@ -93,8 +94,10 @@ def get_available_algorithms(
 
     if task_type == "classification":
         algorithms = CLASSIFICATION_ALGORITHMS
+
     elif task_type == "regression":
         algorithms = REGRESSION_ALGORITHMS
+
     else:
         raise ModelTrainingError(
             f"Неподдържан тип задача: {task_type}"
@@ -172,6 +175,7 @@ def _prepare_target_values(
     try:
         numeric_train = np.asarray(y_train, dtype=float)
         numeric_test = np.asarray(y_test, dtype=float)
+
     except (ValueError, TypeError) as exc:
         raise ModelTrainingError(
             "При регресия целевата колона трябва "
@@ -201,14 +205,19 @@ def train_experiment_model(
     """Подготвя, разделя, трансформира и обучава ML модел.
 
     Последователност:
-        1. Подготвя входните и целевите данни.
+        1. Подготвя необработените входни и целеви данни.
         2. Разделя ги на Training и Test.
-        3. Обучава трансформатора само върху Training.
-        4. Трансформира Training и Test.
-        5. Създава ML модел.
-        6. Обучава модела върху Training данните.
+        3. Разпознава типовете само от Training.
+        4. Обучава трансформатора само върху Training.
+        5. Трансформира Training и Test.
+        6. Проверява целевите стойности.
+        7. Създава ML модел.
+        8. Обучава модела върху Training данните.
 
-    Тестовите данни не участват в обучението на модела.
+    Тестовите данни не участват в разпознаването
+    на типовете, обучението на трансформатора
+    или обучението на ML модела.
+
     Те ще се използват за последваща оценка.
     """
 
@@ -222,23 +231,37 @@ def train_experiment_model(
             f"за задача „{task_type}“."
         )
 
+    # Подготвяме данните, без предварително
+    # разпознаване на типовете колони.
     prepared_data = prepare_experiment_data(
         dataset=dataset,
         target_column=target_column,
         feature_columns=feature_columns,
+        defer_type_detection=True,
     )
 
+    # Разделяме необработените данни.
     data_split = split_experiment_data(
         prepared_data=prepared_data,
         test_size=test_size,
         random_state=random_state,
     )
 
+    # Записваме типовете, разпознати единствено
+    # от тренировъчната извадка.
+    prepared_data = with_training_feature_types(
+        prepared_data=prepared_data,
+        X_train=data_split.X_train,
+    )
+
+    # Обучаваме трансформатора върху Training.
+    # Прилагаме научените параметри върху Test.
     transformed_data = transform_experiment_split(
         prepared_data=prepared_data,
         data_split=data_split,
     )
 
+    # Подготвяме целевите стойности според типа задача.
     y_train, y_test = _prepare_target_values(
         task_type=task_type,
         y_train=transformed_data.y_train,
@@ -252,17 +275,20 @@ def train_experiment_model(
             y_test=y_test,
         )
 
+    # Създаваме избрания ML модел.
     estimator = _create_estimator(
         task_type=task_type,
         algorithm=algorithm,
         random_state=random_state,
     )
 
+    # Обучаваме модела само върху Training данните.
     try:
         estimator.fit(
             transformed_data.X_train,
             y_train,
         )
+
     except (ValueError, TypeError, OverflowError) as exc:
         raise ModelTrainingError(
             f"Обучението на модела не успя: {exc}"

@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 import numpy as np
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    OneHotEncoder,
+    StandardScaler,
+)
 
 from ml_experiment_lab.datasets import LoadedDataset
 
@@ -169,11 +173,11 @@ def _detect_feature_types(
         elif numeric_count == 0:
             categorical_columns.append(column_name)
 
-        # Колоната съдържа едновременно числа и текст.
+        # Колоната съдържа числа и текст.
         else:
             mixed_columns.append(column_name)
 
-            # Засега запазваме стойностите като категории,
+            # Запазваме смесените колони като категории,
             # за да не губим информация автоматично.
             categorical_columns.append(column_name)
 
@@ -185,17 +189,164 @@ def _detect_feature_types(
     )
 
 
+def _detect_training_feature_types(
+    X: np.ndarray,
+    feature_columns: tuple[str, ...],
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    """Разпознава типовете от необработени тренировъчни данни.
+
+    Входните стойности в режима с отложено
+    разпознаване са представени като текст или NaN.
+    """
+
+    rows = tuple(
+        tuple(
+            value.strip() if isinstance(value, str) else ""
+            for value in row
+        )
+        for row in X
+    )
+
+    feature_indexes = tuple(
+        range(len(feature_columns))
+    )
+
+    return _detect_feature_types(
+        rows,
+        feature_indexes,
+        feature_columns,
+    )
+
+
+def _select_training_numeric_indexes(
+    X: np.ndarray,
+) -> list[int]:
+    """Определя числовите колони при обучението."""
+
+    feature_columns = tuple(
+        str(index)
+        for index in range(X.shape[1])
+    )
+
+    numeric_columns, _, _, _ = (
+        _detect_training_feature_types(
+            X,
+            feature_columns,
+        )
+    )
+
+    return [
+        int(column)
+        for column in numeric_columns
+    ]
+
+
+def _select_training_categorical_indexes(
+    X: np.ndarray,
+) -> list[int]:
+    """Определя категориалните колони при обучението."""
+
+    numeric_indexes = set(
+        _select_training_numeric_indexes(X)
+    )
+
+    return [
+        index
+        for index in range(X.shape[1])
+        if index not in numeric_indexes
+    ]
+
+
+def _convert_numeric_features(
+    X: np.ndarray,
+) -> np.ndarray:
+    """Преобразува входните стойности в числа.
+
+    Липсващите и невалидните числови стойности
+    се преобразуват в NaN.
+    """
+
+    values = np.asarray(X, dtype=object)
+
+    converted = np.full(
+        values.shape,
+        np.nan,
+        dtype=float,
+    )
+
+    for index, value in np.ndenumerate(values):
+        if not isinstance(value, str):
+            continue
+
+        number = _to_number(value)
+
+        if number is not None:
+            converted[index] = number
+
+    return converted
+
+
+def with_training_feature_types(
+    prepared_data: PreparedExperimentData,
+    X_train: np.ndarray,
+) -> PreparedExperimentData:
+    """Записва типовете, разпознати от Training данните."""
+
+    (
+        numeric_columns,
+        categorical_columns,
+        mixed_columns,
+        empty_columns,
+    ) = _detect_training_feature_types(
+        X_train,
+        prepared_data.feature_columns,
+    )
+
+    return replace(
+        prepared_data,
+        numeric_columns=numeric_columns,
+        categorical_columns=categorical_columns,
+        mixed_columns=mixed_columns,
+        empty_columns=empty_columns,
+    )
+
+
 def _build_preprocessor(
-    numeric_indexes: tuple[int, ...],
-    categorical_indexes: tuple[int, ...],
+    numeric_indexes: tuple[int, ...] = (),
+    categorical_indexes: tuple[int, ...] = (),
+    *,
+    defer_type_detection: bool = False,
 ) -> ColumnTransformer:
-    """Създава pipeline за числовите и категориалните колони."""
+    """Създава pipeline за предварителна обработка.
+
+    При отложено разпознаване типовете се определят
+    при fit() само от подадените тренировъчни данни.
+    """
 
     transformers = []
 
-    if numeric_indexes:
-        numeric_pipeline = Pipeline(
-            steps=[
+    # Pipeline за числови характеристики.
+    if numeric_indexes or defer_type_detection:
+        numeric_steps = []
+
+        if defer_type_detection:
+            numeric_steps.append(
+                (
+                    "parser",
+                    FunctionTransformer(
+                        _convert_numeric_features,
+                        feature_names_out="one-to-one",
+                    ),
+                )
+            )
+
+        numeric_steps.extend(
+            [
                 (
                     "imputer",
                     SimpleImputer(
@@ -210,15 +361,26 @@ def _build_preprocessor(
             ]
         )
 
+        numeric_pipeline = Pipeline(
+            steps=numeric_steps
+        )
+
+        numeric_selector = (
+            _select_training_numeric_indexes
+            if defer_type_detection
+            else list(numeric_indexes)
+        )
+
         transformers.append(
             (
                 "numeric",
                 numeric_pipeline,
-                list(numeric_indexes),
+                numeric_selector,
             )
         )
 
-    if categorical_indexes:
+    # Pipeline за категориални характеристики.
+    if categorical_indexes or defer_type_detection:
         categorical_pipeline = Pipeline(
             steps=[
                 (
@@ -226,6 +388,7 @@ def _build_preprocessor(
                     SimpleImputer(
                         strategy="constant",
                         fill_value="ЛИПСВАЩА_СТОЙНОСТ",
+                        keep_empty_features=True,
                     ),
                 ),
                 (
@@ -238,11 +401,17 @@ def _build_preprocessor(
             ]
         )
 
+        categorical_selector = (
+            _select_training_categorical_indexes
+            if defer_type_detection
+            else list(categorical_indexes)
+        )
+
         transformers.append(
             (
                 "categorical",
                 categorical_pipeline,
-                list(categorical_indexes),
+                categorical_selector,
             )
         )
 
@@ -258,12 +427,18 @@ def prepare_experiment_data(
     dataset: LoadedDataset,
     target_column: str,
     feature_columns: Sequence[str],
+    *,
+    defer_type_detection: bool = False,
 ) -> PreparedExperimentData:
     """Подготвя X, y и необучен трансформатор за експеримент.
 
-    Числовите характеристики се преобразуват в числа.
-    Категориалните характеристики остават текстови.
-    Празните входни стойности се представят като NaN.
+    При стандартния режим числовите характеристики
+    се преобразуват в числа, а категориалните остават
+    текстови.
+
+    При defer_type_detection=True входните стойности
+    се запазват като текст или NaN до разделянето
+    на тренировъчна и тестова извадка.
 
     Редовете с липсваща целева стойност се изключват.
 
@@ -310,6 +485,55 @@ def prepare_experiment_data(
 
     valid_rows_tuple = tuple(valid_rows)
 
+    # При реален ML експеримент отлагаме
+    # разпознаването на типовете до Training.
+    if defer_type_detection:
+        feature_rows = []
+        target_values = []
+
+        for row in valid_rows_tuple:
+            prepared_row = []
+
+            for source_index in feature_indexes:
+                value = row[source_index].strip()
+
+                prepared_row.append(
+                    value if value else np.nan
+                )
+
+            feature_rows.append(prepared_row)
+
+            target_values.append(
+                row[target_index].strip()
+            )
+
+        X = np.asarray(
+            feature_rows,
+            dtype=object,
+        )
+
+        y = np.asarray(
+            target_values,
+            dtype=object,
+        )
+
+        return PreparedExperimentData(
+            X=X,
+            y=y,
+            preprocessor=_build_preprocessor(
+                defer_type_detection=True,
+            ),
+            feature_columns=selected_features,
+            target_column=target_column,
+            numeric_columns=(),
+            categorical_columns=(),
+            excluded_rows=excluded_rows,
+            mixed_columns=(),
+            empty_columns=(),
+        )
+
+    # Стандартен режим за самостоятелна
+    # подготовка и анализ на данните.
     (
         numeric_columns,
         categorical_columns,

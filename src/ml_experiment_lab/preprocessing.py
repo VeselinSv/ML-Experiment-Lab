@@ -10,6 +10,7 @@ from typing import Literal, Sequence
 
 import numpy as np
 from sklearn.compose import ColumnTransformer
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
@@ -17,6 +18,7 @@ from sklearn.preprocessing import (
     OneHotEncoder,
     StandardScaler,
 )
+from sklearn.utils.validation import check_is_fitted
 
 from ml_experiment_lab.datasets import LoadedDataset
 
@@ -43,6 +45,12 @@ CategoricalImputationStrategy = Literal[
     "constant",
 ]
 
+FeatureType = Literal[
+    "numeric",
+    "categorical",
+    "datetime",
+]
+
 
 NUMERIC_IMPUTATION_STRATEGIES = {
     "mean": "Средноаритметична стойност",
@@ -57,8 +65,6 @@ CATEGORICAL_IMPUTATION_STRATEGIES = {
 }
 
 
-# Поддържани числови формати:
-# 25, -25, 25.50, 25,50, .5, ,5, 1e3, 1,5e3.
 NUMERIC_PATTERN = re.compile(
     r"[+-]?(?:[0-9]+(?:\.[0-9]*|,[0-9]+)?|[.,][0-9]+)"
     r"(?:[eE][+-]?[0-9]+)?"
@@ -79,11 +85,19 @@ class PreprocessingConfiguration:
 
     categorical_fill_value: str = "ЛИПСВАЩА_СТОЙНОСТ"
 
+    drop_empty_columns: bool = False
+
+    drop_constant_features: bool = False
+
     def __post_init__(self) -> None:
         """Проверява валидността на настройките."""
 
         if (
-            self.numeric_imputation_strategy
+            not isinstance(
+                self.numeric_imputation_strategy,
+                str,
+            )
+            or self.numeric_imputation_strategy
             not in NUMERIC_IMPUTATION_STRATEGIES
         ):
             raise PreprocessingError(
@@ -92,7 +106,11 @@ class PreprocessingConfiguration:
             )
 
         if (
-            self.categorical_imputation_strategy
+            not isinstance(
+                self.categorical_imputation_strategy,
+                str,
+            )
+            or self.categorical_imputation_strategy
             not in CATEGORICAL_IMPUTATION_STRATEGIES
         ):
             raise PreprocessingError(
@@ -136,6 +154,24 @@ class PreprocessingConfiguration:
                 "да бъде непразна текстова стойност."
             )
 
+        if not isinstance(
+            self.drop_empty_columns,
+            bool,
+        ):
+            raise PreprocessingError(
+                "Настройката за премахване на празни "
+                "колони трябва да бъде булева стойност."
+            )
+
+        if not isinstance(
+            self.drop_constant_features,
+            bool,
+        ):
+            raise PreprocessingError(
+                "Настройката за премахване на постоянни "
+                "характеристики трябва да бъде булева стойност."
+            )
+
 
 @dataclass(frozen=True)
 class PreparedExperimentData:
@@ -143,11 +179,15 @@ class PreparedExperimentData:
 
     X: np.ndarray
     y: np.ndarray
-    preprocessor: ColumnTransformer
+
+    preprocessor: ColumnTransformer | Pipeline
+
     feature_columns: tuple[str, ...]
     target_column: str
+
     numeric_columns: tuple[str, ...]
     categorical_columns: tuple[str, ...]
+
     excluded_rows: int
 
     mixed_columns: tuple[str, ...] = ()
@@ -158,6 +198,31 @@ class PreparedExperimentData:
     )
 
     datetime_columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class FeatureSelectionReport:
+    """Информация за премахнатите характеристики."""
+
+    removed_empty_columns: tuple[str, ...] = ()
+
+    removed_constant_features: tuple[str, ...] = ()
+
+    @property
+    def removed_empty_count(self) -> int:
+        """Връща броя на премахнатите празни колони."""
+
+        return len(
+            self.removed_empty_columns
+        )
+
+    @property
+    def removed_constant_count(self) -> int:
+        """Връща броя на премахнатите постоянни характеристики."""
+
+        return len(
+            self.removed_constant_features
+        )
 
 
 def _to_number(value: str) -> float | None:
@@ -272,7 +337,6 @@ def _detect_feature_types(
             if row[column_index].strip()
         ]
 
-        # Изцяло празна колона.
         if not values:
             empty_columns.append(column_name)
             categorical_columns.append(column_name)
@@ -288,24 +352,17 @@ def _detect_feature_types(
             for value in values
         )
 
-        # Всички непразни стойности са числа.
         if numeric_count == len(values):
             numeric_columns.append(column_name)
 
-        # Всички непразни стойности са валидни дати.
         elif datetime_count == len(values):
             datetime_columns.append(column_name)
 
-        # Колоната съдържа само обикновен текст.
         elif numeric_count == 0 and datetime_count == 0:
             categorical_columns.append(column_name)
 
-        # Колоната съдържа смесени типове.
         else:
             mixed_columns.append(column_name)
-
-            # Запазваме смесените колони като категории,
-            # за да не губим информация автоматично.
             categorical_columns.append(column_name)
 
     return (
@@ -417,35 +474,91 @@ def _select_training_datetime_indexes(
     ]
 
 
-def _select_categorical_by_empty(
+def _has_observed_values(
+    X: np.ndarray,
+    column_index: int,
+) -> bool:
+    """Проверява дали колоната има поне една непразна стойност."""
+
+    for value in X[:, column_index]:
+
+        if isinstance(value, str):
+            if value.strip():
+                return True
+
+        elif isinstance(
+            value,
+            (int, float, np.integer, np.floating),
+        ):
+            if not np.isnan(value):
+                return True
+
+    return False
+
+
+def _select_feature_indexes(
     X: np.ndarray,
     *,
+    feature_type: FeatureType,
     fixed_indexes: tuple[int, ...] | None,
-    empty: bool,
+    drop_empty_columns: bool,
+    empty: bool | None = None,
 ) -> list[int]:
-    """Разделя категориалните колони на празни и непразни."""
+    """Избира колони според типа и настройките за филтриране.
 
+    Функцията се извиква при обучението на трансформатора.
+    """
+
+    # При отложено разпознаване определяме
+    # типовете само от подадените Training данни.
     if fixed_indexes is None:
-        categorical_indexes = (
-            _select_training_categorical_indexes(X)
-        )
+
+        if feature_type == "numeric":
+            indexes = _select_training_numeric_indexes(X)
+
+        elif feature_type == "categorical":
+            indexes = _select_training_categorical_indexes(X)
+
+        else:
+            indexes = _select_training_datetime_indexes(X)
+
     else:
-        categorical_indexes = list(fixed_indexes)
+        indexes = list(fixed_indexes)
 
-    selected_indexes = []
+    # Определяме кои входни колони са изцяло празни.
+    if drop_empty_columns or empty is not None:
 
-    for index in categorical_indexes:
-        has_observed_values = any(
-            isinstance(value, str) and bool(value.strip())
-            for value in X[:, index]
-        )
+        observed_indexes = {
+            index
+            for index in range(X.shape[1])
+            if _has_observed_values(X, index)
+        }
 
-        is_empty = not has_observed_values
+        if drop_empty_columns:
 
-        if is_empty == empty:
-            selected_indexes.append(index)
+            if not observed_indexes:
+                raise PreprocessingError(
+                    "След премахването на празните колони "
+                    "не остава нито една входна характеристика."
+                )
 
-    return selected_indexes
+            indexes = [
+                index
+                for index in indexes
+                if index in observed_indexes
+            ]
+
+        # Допълнително разделяме категориалните
+        # колони при Most Frequent Imputation.
+        if empty is not None:
+
+            indexes = [
+                index
+                for index in indexes
+                if (index not in observed_indexes) == empty
+            ]
+
+    return indexes
 
 
 def _convert_numeric_features(
@@ -453,7 +566,10 @@ def _convert_numeric_features(
 ) -> np.ndarray:
     """Преобразува входните стойности в числа."""
 
-    values = np.asarray(X, dtype=object)
+    values = np.asarray(
+        X,
+        dtype=object,
+    )
 
     converted = np.full(
         values.shape,
@@ -462,6 +578,7 @@ def _convert_numeric_features(
     )
 
     for index, value in np.ndenumerate(values):
+
         if not isinstance(value, str):
             continue
 
@@ -476,11 +593,7 @@ def _convert_numeric_features(
 def _convert_datetime_features(
     X: np.ndarray,
 ) -> np.ndarray:
-    """Преобразува датните колони в числови характеристики.
-
-    Всяка дата се разширява до девет характеристики.
-    Липсващите и невалидните дати се преобразуват в NaN.
-    """
+    """Преобразува датните колони в числови характеристики."""
 
     values = np.asarray(
         X,
@@ -580,11 +693,7 @@ def with_training_feature_types(
 def _build_numeric_imputer(
     configuration: PreprocessingConfiguration,
 ) -> SimpleImputer:
-    """Създава конфигурируем imputer за числа.
-
-    Използва се както за обикновените числови колони,
-    така и за извлечените датни характеристики.
-    """
+    """Създава конфигурируем imputer за числа."""
 
     fill_value = (
         float(configuration.numeric_fill_value)
@@ -608,6 +717,7 @@ def _build_numeric_pipeline(
     numeric_steps = []
 
     if defer_type_detection:
+
         numeric_steps.append(
             (
                 "parser",
@@ -713,69 +823,67 @@ def _build_preprocessor(
     datetime_indexes: tuple[int, ...] = (),
     defer_type_detection: bool = False,
     configuration: PreprocessingConfiguration | None = None,
-) -> ColumnTransformer:
-    """Създава конфигурируем pipeline за обработка.
-
-    Поддържа числови, категориални и датни колони.
-
-    При отложено разпознаване типовете се определят
-    при fit() само от тренировъчните данни.
-    """
+) -> ColumnTransformer | Pipeline:
+    """Създава конфигурируем трансформатор за ML данни."""
 
     if configuration is None:
         configuration = PreprocessingConfiguration()
 
     transformers = []
 
-    # Обработка на числовите характеристики.
+    def make_selector(
+        feature_type: FeatureType,
+        indexes: tuple[int, ...],
+        *,
+        empty: bool | None = None,
+    ):
+        """Създава селектор за дадена група характеристики."""
+
+        if (
+            not defer_type_detection
+            and not configuration.drop_empty_columns
+            and empty is None
+        ):
+            return list(indexes)
+
+        return partial(
+            _select_feature_indexes,
+            feature_type=feature_type,
+            fixed_indexes=(
+                None
+                if defer_type_detection
+                else indexes
+            ),
+            drop_empty_columns=(
+                configuration.drop_empty_columns
+            ),
+            empty=empty,
+        )
+
+    # Числови характеристики.
     if numeric_indexes or defer_type_detection:
-
-        numeric_pipeline = _build_numeric_pipeline(
-            configuration=configuration,
-            defer_type_detection=defer_type_detection,
-        )
-
-        numeric_selector = (
-            _select_training_numeric_indexes
-            if defer_type_detection
-            else list(numeric_indexes)
-        )
 
         transformers.append(
             (
                 "numeric",
-                numeric_pipeline,
-                numeric_selector,
+                _build_numeric_pipeline(
+                    configuration=configuration,
+                    defer_type_detection=defer_type_detection,
+                ),
+                make_selector(
+                    "numeric",
+                    numeric_indexes,
+                ),
             )
         )
 
-    # Обработка на категориалните характеристики.
+    # Категориални характеристики.
     if categorical_indexes or defer_type_detection:
 
         if (
             configuration.categorical_imputation_strategy
             == "most_frequent"
         ):
-            # Изцяло празна колона няма най-честа категория.
-            # Затова използваме отделен pipeline с константа.
-
-            fixed_indexes = (
-                None
-                if defer_type_detection
-                else categorical_indexes
-            )
-
-            nonempty_selector = partial(
-                _select_categorical_by_empty,
-                fixed_indexes=fixed_indexes,
-                empty=False,
-            )
-
-            empty_selector = partial(
-                _select_categorical_by_empty,
-                fixed_indexes=fixed_indexes,
-                empty=True,
-            )
 
             transformers.append(
                 (
@@ -783,65 +891,174 @@ def _build_preprocessor(
                     _build_categorical_pipeline(
                         configuration=configuration,
                     ),
-                    nonempty_selector,
+                    make_selector(
+                        "categorical",
+                        categorical_indexes,
+                        empty=False,
+                    ),
                 )
             )
 
-            transformers.append(
-                (
-                    "categorical_empty",
-                    _build_categorical_pipeline(
-                        configuration=configuration,
-                        force_constant=True,
-                    ),
-                    empty_selector,
+            # Резервна стратегия за изцяло празни колони.
+            # Не е необходима, ако те се премахват.
+            if not configuration.drop_empty_columns:
+
+                transformers.append(
+                    (
+                        "categorical_empty",
+                        _build_categorical_pipeline(
+                            configuration=configuration,
+                            force_constant=True,
+                        ),
+                        make_selector(
+                            "categorical",
+                            categorical_indexes,
+                            empty=True,
+                        ),
+                    )
                 )
-            )
 
         else:
 
-            categorical_selector = (
-                _select_training_categorical_indexes
-                if defer_type_detection
-                else list(categorical_indexes)
-            )
-
             transformers.append(
                 (
                     "categorical",
                     _build_categorical_pipeline(
                         configuration=configuration,
                     ),
-                    categorical_selector,
+                    make_selector(
+                        "categorical",
+                        categorical_indexes,
+                    ),
                 )
             )
 
-    # Обработка на датните характеристики.
+    # Датни характеристики.
     if datetime_indexes or defer_type_detection:
-
-        datetime_pipeline = _build_datetime_pipeline(
-            configuration=configuration,
-        )
-
-        datetime_selector = (
-            _select_training_datetime_indexes
-            if defer_type_detection
-            else list(datetime_indexes)
-        )
 
         transformers.append(
             (
                 "datetime",
-                datetime_pipeline,
-                datetime_selector,
+                _build_datetime_pipeline(
+                    configuration=configuration,
+                ),
+                make_selector(
+                    "datetime",
+                    datetime_indexes,
+                ),
             )
         )
 
-    return ColumnTransformer(
+    column_transformer = ColumnTransformer(
         transformers=transformers,
         remainder="drop",
         sparse_threshold=0.0,
         verbose_feature_names_out=False,
+    )
+
+    # Ако премахването на постоянни характеристики
+    # е изключено, запазваме досегашната структура.
+    if not configuration.drop_constant_features:
+        return column_transformer
+
+    # Първо трансформираме входните данни,
+    # след това премахваме постоянните характеристики.
+    return Pipeline(
+        steps=[
+            (
+                "columns",
+                column_transformer,
+            ),
+            (
+                "variance",
+                VarianceThreshold(
+                    threshold=0.0,
+                ),
+            ),
+        ]
+    )
+
+
+def get_feature_selection_report(
+    prepared_data: PreparedExperimentData,
+    fitted_preprocessor: ColumnTransformer | Pipeline,
+) -> FeatureSelectionReport:
+    """Връща информация за действително премахнатите колони.
+
+    Използва вече обучения трансформатор и не променя данните.
+    """
+
+    configuration = (
+        prepared_data.preprocessing_configuration
+    )
+
+    if isinstance(
+        fitted_preprocessor,
+        Pipeline,
+    ):
+        column_transformer = (
+            fitted_preprocessor.named_steps["columns"]
+        )
+
+    else:
+        column_transformer = fitted_preprocessor
+
+    check_is_fitted(column_transformer)
+
+    removed_empty_columns = []
+    removed_constant_features = []
+
+    # Празните колони са останали извън всички
+    # групи на обучения ColumnTransformer.
+    if configuration.drop_empty_columns:
+
+        for name, _, indexes in (
+            column_transformer.transformers_
+        ):
+
+            if name == "remainder":
+
+                removed_empty_columns.extend(
+                    prepared_data.feature_columns[int(index)]
+                    for index in indexes
+                )
+
+                break
+
+    # Определяме кои трансформирани характеристики
+    # са премахнати от VarianceThreshold.
+    if configuration.drop_constant_features:
+
+        variance_selector = (
+            fitted_preprocessor.named_steps["variance"]
+        )
+
+        check_is_fitted(variance_selector)
+
+        feature_names = (
+            column_transformer.get_feature_names_out()
+        )
+
+        support_mask = (
+            variance_selector.get_support()
+        )
+
+        removed_constant_features.extend(
+            str(feature_name)
+            for feature_name, selected in zip(
+                feature_names,
+                support_mask,
+            )
+            if not selected
+        )
+
+    return FeatureSelectionReport(
+        removed_empty_columns=tuple(
+            removed_empty_columns
+        ),
+        removed_constant_features=tuple(
+            removed_constant_features
+        ),
     )
 
 
@@ -857,13 +1074,16 @@ def prepare_experiment_data(
 ) -> PreparedExperimentData:
     """Подготвя X, y и необучен трансформатор.
 
-    Поддържа числови, категориални и датни колони.
+    Поддържа:
+        - числови характеристики;
+        - категориални характеристики;
+        - датни характеристики;
+        - конфигурируемо попълване на липсващи стойности;
+        - премахване на изцяло празни колони;
+        - премахване на постоянни характеристики.
 
     При defer_type_detection=True типовете се разпознават
     след разделянето на Training и Test.
-
-    Настройките за предварителна обработка могат
-    да бъдат зададени чрез PreprocessingConfiguration.
 
     Редовете с липсваща целева стойност се изключват.
 
@@ -871,6 +1091,7 @@ def prepare_experiment_data(
     """
 
     if preprocessing_configuration is None:
+
         preprocessing_configuration = (
             PreprocessingConfiguration()
         )
@@ -903,7 +1124,9 @@ def prepare_experiment_data(
         dataset.rows,
         start=1,
     ):
+
         if len(row) != dataset.column_count:
+
             raise PreprocessingError(
                 f"Ред {row_number} има неправилен брой стойности."
             )
@@ -913,6 +1136,7 @@ def prepare_experiment_data(
     excluded_rows = 0
 
     for row in dataset.rows:
+
         target_value = row[target_index].strip()
 
         if not target_value:
@@ -928,8 +1152,8 @@ def prepare_experiment_data(
 
     valid_rows_tuple = tuple(valid_rows)
 
-    # При реално обучение типовете ще бъдат определени
-    # след разделяне на тренировъчна и тестова извадка.
+    # При реално обучение отлагаме разпознаването
+    # на типовете до Training.
     if defer_type_detection:
 
         numeric_columns = ()
@@ -964,7 +1188,6 @@ def prepare_experiment_data(
         datetime_columns
     )
 
-    # Индекси спрямо новата матрица X.
     numeric_indexes = tuple(
         index
         for index, column in enumerate(selected_features)
@@ -994,12 +1217,14 @@ def prepare_experiment_data(
             selected_features,
             feature_indexes,
         ):
+
             value = row[source_index].strip()
 
             if (
                 not defer_type_detection
                 and column in numeric_column_set
             ):
+
                 number = _to_number(value)
 
                 prepared_row.append(
@@ -1007,8 +1232,7 @@ def prepare_experiment_data(
                 )
 
             else:
-                # Категориалните и датните стойности
-                # се запазват като текст до трансформацията.
+
                 prepared_row.append(
                     value if value else np.nan
                 )

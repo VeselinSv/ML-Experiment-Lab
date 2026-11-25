@@ -9,18 +9,22 @@ from functools import partial
 from typing import Literal, Sequence
 
 import numpy as np
+
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
+
 from sklearn.preprocessing import (
     FunctionTransformer,
     MaxAbsScaler,
     MinMaxScaler,
     OneHotEncoder,
+    OrdinalEncoder,
     RobustScaler,
     StandardScaler,
 )
+
 from sklearn.utils.validation import check_is_fitted
 
 from ml_experiment_lab.datasets import LoadedDataset
@@ -30,6 +34,8 @@ from ml_experiment_lab.datetime_features import (
     extract_datetime_features,
     is_datetime_value,
 )
+
+from ml_experiment_lab.encoding import FrequencyEncoder
 
 
 class PreprocessingError(ValueError):
@@ -54,6 +60,12 @@ ScalingMethod = Literal[
     "robust",
     "maxabs",
     "none",
+]
+
+EncodingMethod = Literal[
+    "onehot",
+    "ordinal",
+    "frequency",
 ]
 
 FeatureType = Literal[
@@ -83,6 +95,12 @@ SCALING_METHODS = {
     "none": "Без мащабиране",
 }
 
+ENCODING_METHODS = {
+    "onehot": "Бинарно кодиране (One-Hot Encoding)",
+    "ordinal": "Поредно кодиране (Ordinal Encoding)",
+    "frequency": "Честотно кодиране (Frequency Encoding)",
+}
+
 
 NUMERIC_PATTERN = re.compile(
     r"[+-]?(?:[0-9]+(?:\.[0-9]*|,[0-9]+)?|[.,][0-9]+)"
@@ -109,6 +127,8 @@ class PreprocessingConfiguration:
     drop_constant_features: bool = False
 
     scaling_method: ScalingMethod = "standard"
+
+    encoding_method: EncodingMethod = "onehot"
 
     def __post_init__(self) -> None:
         """Проверява валидността на настройките."""
@@ -200,6 +220,15 @@ class PreprocessingConfiguration:
             raise PreprocessingError(
                 "Неподдържан метод за мащабиране "
                 "на числовите характеристики."
+            )
+
+        if (
+            not isinstance(self.encoding_method, str)
+            or self.encoding_method not in ENCODING_METHODS
+        ):
+            raise PreprocessingError(
+                "Неподдържан метод за кодиране "
+                "на категориалните характеристики."
             )
 
 
@@ -571,8 +600,8 @@ def _select_feature_indexes(
                 if index in observed_indexes
             ]
 
-        # Допълнително разделяме категориалните
-        # колони при Most Frequent Imputation.
+        # Разделяме категориалните колони
+        # при Most Frequent Imputation.
         if empty is not None:
 
             indexes = [
@@ -740,10 +769,7 @@ def _build_scaler(
     | MaxAbsScaler
     | Literal["passthrough"]
 ):
-    """Създава избрания метод за мащабиране.
-
-    При метод none стъпката за мащабиране се пропуска.
-    """
+    """Създава избрания метод за мащабиране."""
 
     method = configuration.scaling_method
 
@@ -769,6 +795,41 @@ def _build_scaler(
 
     raise PreprocessingError(
         f"Неподдържан метод за мащабиране: „{method}“."
+    )
+
+
+def _build_encoder(
+    configuration: PreprocessingConfiguration,
+) -> (
+    OneHotEncoder
+    | OrdinalEncoder
+    | FrequencyEncoder
+):
+    """Създава избрания метод за категориално кодиране."""
+
+    method = configuration.encoding_method
+
+    if method == "onehot":
+
+        return OneHotEncoder(
+            handle_unknown="ignore",
+            sparse_output=False,
+        )
+
+    if method == "ordinal":
+
+        return OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            dtype=np.float64,
+        )
+
+    if method == "frequency":
+
+        return FrequencyEncoder()
+
+    raise PreprocessingError(
+        f"Неподдържан метод за кодиране: „{method}“."
     )
 
 
@@ -841,10 +902,7 @@ def _build_categorical_pipeline(
             ),
             (
                 "encoder",
-                OneHotEncoder(
-                    handle_unknown="ignore",
-                    sparse_output=False,
-                ),
+                _build_encoder(configuration),
             ),
         ]
     )
@@ -868,15 +926,11 @@ def _build_datetime_pipeline(
             ),
             (
                 "imputer",
-                _build_numeric_imputer(
-                    configuration
-                ),
+                _build_numeric_imputer(configuration),
             ),
             (
                 "scaler",
-                _build_scaler(
-                    configuration
-                ),
+                _build_scaler(configuration),
             ),
         ]
     )
@@ -966,7 +1020,6 @@ def _build_preprocessor(
             )
 
             # Резервна стратегия за изцяло празни колони.
-            # Не е необходима, ако те се премахват.
             if not configuration.drop_empty_columns:
 
                 transformers.append(
@@ -1022,13 +1075,11 @@ def _build_preprocessor(
         verbose_feature_names_out=False,
     )
 
-    # Ако премахването на постоянни характеристики
-    # е изключено, запазваме досегашната структура.
+    # Запазваме досегашната структура,
+    # когато Feature Selection е изключен.
     if not configuration.drop_constant_features:
         return column_transformer
 
-    # Първо трансформираме входните данни,
-    # след това премахваме постоянните характеристики.
     return Pipeline(
         steps=[
             (
@@ -1049,10 +1100,7 @@ def get_feature_selection_report(
     prepared_data: PreparedExperimentData,
     fitted_preprocessor: ColumnTransformer | Pipeline,
 ) -> FeatureSelectionReport:
-    """Връща информация за действително премахнатите колони.
-
-    Използва вече обучения трансформатор и не променя данните.
-    """
+    """Връща информация за действително премахнатите колони."""
 
     configuration = (
         prepared_data.preprocessing_configuration
@@ -1147,7 +1195,8 @@ def prepare_experiment_data(
         - конфигурируемо попълване на липсващи стойности;
         - премахване на изцяло празни колони;
         - премахване на постоянни характеристики;
-        - конфигурируемо мащабиране.
+        - конфигурируемо мащабиране;
+        - конфигурируемо категориално кодиране.
 
     При defer_type_detection=True типовете се разпознават
     след разделянето на Training и Test.
